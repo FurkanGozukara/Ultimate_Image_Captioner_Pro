@@ -52,7 +52,8 @@ class QwenPreset:
 
 def _read_readme() -> str:
     if README_PATH.exists():
-        return README_PATH.read_text(encoding="utf-8")
+        text = README_PATH.read_text(encoding="utf-8")
+        return text.replace("[y_min, x_min, y_max, x_max]", "[x_min, y_min, x_max, y_max]")
     return ""
 
 

@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 
 ELEMENT_HEADERS = ["type", "y_min", "x_min", "y_max", "x_max", "text", "desc", "color_palette"]
+XYXY_ELEMENT_HEADERS = ["type", "x_min", "y_min", "x_max", "y_max", "text", "desc", "color_palette"]
 EMPTY_ELEMENT_ROW = ["obj", 80, 80, 360, 360, "", "", ""]
 
 BOX_COLORS = [
@@ -98,17 +99,17 @@ def validate_bbox(value: Any) -> tuple[bool, str]:
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         return False, "bbox must contain four numbers."
     try:
-        y_min, x_min, y_max, x_max = [int(round(float(item))) for item in value]
+        min_1, min_2, max_1, max_2 = [int(round(float(item))) for item in value]
     except Exception:
         return False, "bbox values must be numeric."
-    if not (0 <= y_min < y_max <= 1000 and 0 <= x_min < x_max <= 1000):
-        return False, "expected 0 <= y_min < y_max <= 1000 and 0 <= x_min < x_max <= 1000."
+    if not (0 <= min_1 < max_1 <= 1000 and 0 <= min_2 < max_2 <= 1000):
+        return False, "expected normalized min/max pairs in the 0-1000 range."
     return True, ""
 
 
-def clamp_bbox(y_min: Any, x_min: Any, y_max: Any, x_max: Any) -> list[int]:
+def clamp_bbox(min_1: Any, min_2: Any, max_1: Any, max_2: Any) -> list[int]:
     vals = []
-    for value in (y_min, x_min, y_max, x_max):
+    for value in (min_1, min_2, max_1, max_2):
         try:
             vals.append(max(0, min(1000, int(round(float(value))))))
         except Exception:
@@ -118,6 +119,22 @@ def clamp_bbox(y_min: Any, x_min: Any, y_max: Any, x_max: Any) -> list[int]:
     if vals[3] <= vals[1]:
         vals[3] = min(1000, vals[1] + 1)
     return vals
+
+
+def clean_bbox_order(value: Any) -> str:
+    return "xyxy" if str(value or "").lower() == "xyxy" else "yxyx"
+
+
+def headers_for_bbox_order(value: Any) -> list[str]:
+    return XYXY_ELEMENT_HEADERS if clean_bbox_order(value) == "xyxy" else ELEMENT_HEADERS
+
+
+def bbox_to_yxyx(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
+    first, second, third, fourth = clamp_bbox(*bbox)
+    if clean_bbox_order(bbox_order) == "xyxy":
+        x_min, y_min, x_max, y_max = first, second, third, fourth
+        return [y_min, x_min, y_max, x_max]
+    return [first, second, third, fourth]
 
 
 def _palette_to_text(value: Any) -> str:
@@ -163,7 +180,7 @@ def json_to_element_rows(data: dict[str, Any] | None) -> list[list[Any]]:
     return rows
 
 
-def rows_to_elements(rows: Any) -> list[dict[str, Any]]:
+def rows_to_elements(rows: Any, bbox_order: str = "yxyx") -> list[dict[str, Any]]:
     if rows is None:
         return []
     if isinstance(rows, dict) and "data" in rows:
@@ -174,13 +191,13 @@ def rows_to_elements(rows: Any) -> list[dict[str, Any]]:
             continue
         values = list(row) + [""] * max(0, len(ELEMENT_HEADERS) - len(row))
         element_type = str(values[0] or "obj").strip() or "obj"
-        y_min, x_min, y_max, x_max = values[1], values[2], values[3], values[4]
+        min_1, min_2, max_1, max_2 = values[1], values[2], values[3], values[4]
         text_value = str(values[5] or "").strip()
         desc_value = str(values[6] or "").strip()
         palette = _palette_from_text(values[7])
         element: dict[str, Any] = {"type": "text" if element_type == "text" else "obj"}
-        if all(str(v).strip() for v in (y_min, x_min, y_max, x_max)):
-            element["bbox"] = clamp_bbox(y_min, x_min, y_max, x_max)
+        if all(str(v).strip() for v in (min_1, min_2, max_1, max_2)):
+            element["bbox"] = clamp_bbox(min_1, min_2, max_1, max_2)
         if element["type"] == "text":
             element["text"] = text_value
         if desc_value:
@@ -194,7 +211,7 @@ def rows_to_elements(rows: Any) -> list[dict[str, Any]]:
     return elements
 
 
-def apply_rows_to_json(json_text: str, rows: Any) -> tuple[str, dict[str, Any] | None, list[str]]:
+def apply_rows_to_json(json_text: str, rows: Any, bbox_order: str = "yxyx") -> tuple[str, dict[str, Any] | None, list[str]]:
     data, _pretty, warnings = parse_json_caption(json_text)
     if data is None:
         data = {
@@ -207,14 +224,14 @@ def apply_rows_to_json(json_text: str, rows: Any) -> tuple[str, dict[str, Any] |
         comp = {}
         data["compositional_deconstruction"] = comp
     comp.setdefault("background", "")
-    comp["elements"] = rows_to_elements(rows)
+    comp["elements"] = rows_to_elements(rows, bbox_order=bbox_order)
     normalized = json.dumps(data, ensure_ascii=False, indent=2)
     return normalized, data, warnings
 
 
 def _file_url(path: str | Path) -> str:
     normalized = str(Path(path)).replace("\\", "/")
-    return "/file=" + quote(normalized, safe="/:")
+    return "/gradio_api/file=" + quote(normalized, safe="/:")
 
 
 def _label_for_element(index: int, element: dict[str, Any]) -> str:
@@ -225,28 +242,76 @@ def _label_for_element(index: int, element: dict[str, Any]) -> str:
     return f"{index:02d} {element.get('type', 'obj')} - {label}"
 
 
+def _normalize_row_values(rows: Any) -> list[list[Any]]:
+    if rows is None:
+        return []
+    if isinstance(rows, dict) and "data" in rows:
+        rows = rows["data"]
+    normalized: list[list[Any]] = []
+    for row in rows or []:
+        if not isinstance(row, (list, tuple)) or not any(str(cell or "").strip() for cell in row):
+            continue
+        values = list(row) + [""] * max(0, len(ELEMENT_HEADERS) - len(row))
+        values = values[: len(ELEMENT_HEADERS)]
+        if all(str(v).strip() for v in values[1:5]):
+            values[1:5] = clamp_bbox(values[1], values[2], values[3], values[4])
+        normalized.append(values)
+    return normalized
+
+
 def overlay_html(
     image_path: str | Path | None,
     rows: Any,
     aspect_ratio: str = "1:1",
     max_height: int = 768,
     empty_message: str = "No boxes to preview.",
+    interactive: bool = False,
+    bbox_order: str = "yxyx",
+    visible_indices: Any = None,
+    disable_auto_update: bool = False,
 ) -> str:
-    elements = rows_to_elements(rows)
+    bbox_order = clean_bbox_order(bbox_order)
+    visible_set = None
+    if visible_indices is not None:
+        try:
+            visible_set = {int(item) for item in visible_indices}
+        except Exception:
+            visible_set = set()
+    row_values = _normalize_row_values(rows)
     boxes = []
-    for index, element in enumerate(elements, start=1):
-        bbox = element.get("bbox")
+    for row_index, values in enumerate(row_values):
+        if visible_set is not None and row_index not in visible_set:
+            continue
+        element = rows_to_elements([values], bbox_order=bbox_order)
+        if not element:
+            continue
+        item = element[0]
+        bbox = item.get("bbox")
         valid, _message = validate_bbox(bbox)
         if not valid:
             continue
-        y_min, x_min, y_max, x_max = bbox
-        color = BOX_COLORS[(index - 1) % len(BOX_COLORS)]
-        label = html.escape(_label_for_element(index, element))
+        y_min, x_min, y_max, x_max = bbox_to_yxyx(bbox, bbox_order=bbox_order)
+        color = BOX_COLORS[(row_index) % len(BOX_COLORS)]
+        label = html.escape(_label_for_element(row_index + 1, item))
+        row_json = html.escape(json.dumps(values, ensure_ascii=False), quote=True)
+        handles = ""
+        if interactive:
+            handles = (
+                '<i class="jc-box-handle jc-box-handle-nw" data-handle="nw"></i>'
+                '<i class="jc-box-handle jc-box-handle-n" data-handle="n"></i>'
+                '<i class="jc-box-handle jc-box-handle-ne" data-handle="ne"></i>'
+                '<i class="jc-box-handle jc-box-handle-e" data-handle="e"></i>'
+                '<i class="jc-box-handle jc-box-handle-se" data-handle="se"></i>'
+                '<i class="jc-box-handle jc-box-handle-s" data-handle="s"></i>'
+                '<i class="jc-box-handle jc-box-handle-sw" data-handle="sw"></i>'
+                '<i class="jc-box-handle jc-box-handle-w" data-handle="w"></i>'
+            )
         boxes.append(
-            f'<div class="jc-box" style="top:{y_min / 10:.3f}%;left:{x_min / 10:.3f}%;'
+            f'<div class="jc-box" data-row-index="{row_index}" data-row="{row_json}" '
+            f'style="top:{y_min / 10:.3f}%;left:{x_min / 10:.3f}%;'
             f'width:{(x_max - x_min) / 10:.3f}%;height:{(y_max - y_min) / 10:.3f}%;'
             f'border-color:{color};background:{color}18;">'
-            f'<span style="background:{color};">{label}</span></div>'
+            f'<span style="background:{color};">{label}</span>{handles}</div>'
         )
 
     if not boxes:
@@ -254,11 +319,15 @@ def overlay_html(
     else:
         box_markup = "\n".join(boxes)
 
+    shell_class = "jc-overlay-shell jc-overlay-interactive" if interactive else "jc-overlay-shell"
+    rows_json = html.escape(json.dumps(row_values, ensure_ascii=False), quote=True)
+    disable_attr = "1" if disable_auto_update else "0"
     if image_path:
         src = html.escape(_file_url(image_path), quote=True)
         return (
-            '<div class="jc-overlay-shell">'
-            f'<div class="jc-overlay-frame" style="max-height:{int(max_height)}px;">'
+            f'<div class="{shell_class}">'
+            f'<div class="jc-overlay-frame" data-rows="{rows_json}" data-bbox-order="{bbox_order}" '
+            f'data-disable-auto-update="{disable_attr}" style="max-height:{int(max_height)}px;">'
             f'<img class="jc-overlay-image" src="{src}" alt="overlay source" />'
             f"{box_markup}</div></div>"
         )
@@ -266,8 +335,9 @@ def overlay_html(
     ratio = aspect_ratio if re.fullmatch(r"\d+(\.\d+)?:\d+(\.\d+)?", str(aspect_ratio or "")) else "1:1"
     width, height = ratio.split(":", 1)
     return (
-        '<div class="jc-overlay-shell">'
-        f'<div class="jc-overlay-frame jc-overlay-blank" style="aspect-ratio:{float(width)}/{float(height)};max-height:{int(max_height)}px;">'
+        f'<div class="{shell_class}">'
+        f'<div class="jc-overlay-frame jc-overlay-blank" data-rows="{rows_json}" data-bbox-order="{bbox_order}" '
+        f'data-disable-auto-update="{disable_attr}" style="aspect-ratio:{float(width)}/{float(height)};max-height:{int(max_height)}px;">'
         f"{box_markup}</div></div>"
     )
 

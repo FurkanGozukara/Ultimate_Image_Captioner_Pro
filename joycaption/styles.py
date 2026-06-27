@@ -160,6 +160,10 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   min-width: 320px;
 }
 
+.jc-qwen-elements-wide {
+  margin-top: 10px;
+}
+
 .block.jc-qwen-status-scroll {
   max-height: 250px !important;
   overflow: auto !important;
@@ -193,8 +197,27 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   margin: 0;
 }
 
+.jc-qwen-status-bottom {
+  margin-top: 10px;
+}
+
 .jc-qwen-preview-panel {
   margin-top: 10px;
+}
+
+.jc-qwen-box-toolbar {
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.jc-qwen-box-filter {
+  margin-bottom: 8px;
+}
+
+.jc-qwen-box-filter fieldset {
+  max-height: 118px;
+  overflow: auto;
 }
 
 .jc-qwen-preview-panel .jc-overlay-shell {
@@ -205,10 +228,11 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 .jc-overlay-shell {
   width: 100%;
   overflow: auto;
-  padding: 10px;
+  padding: 28px 12px 12px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
   background: #0f172a;
+  text-align: center;
 }
 
 .jc-overlay-frame {
@@ -219,6 +243,8 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   background: #111827;
   border: 1px solid rgba(148, 163, 184, 0.35);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+  line-height: 0;
+  vertical-align: top;
 }
 
 .jc-overlay-image {
@@ -226,6 +252,8 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   width: auto;
   max-width: 100%;
   max-height: 768px;
+  height: auto;
+  object-fit: contain;
 }
 
 .jc-overlay-blank {
@@ -244,6 +272,22 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   border-radius: 4px;
   min-width: 18px;
   min-height: 18px;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.jc-overlay-interactive .jc-box {
+  cursor: move;
+  touch-action: none;
+}
+
+.jc-overlay-interactive .jc-box:hover,
+.jc-overlay-interactive .jc-box.is-selected,
+.jc-overlay-interactive .jc-box.is-editing {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.85),
+    0 10px 24px rgba(0, 0, 0, 0.35);
+  z-index: 20;
 }
 
 .jc-box span {
@@ -260,6 +304,77 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.jc-box-handle {
+  display: none;
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #111827;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.85);
+  pointer-events: auto;
+  z-index: 22;
+}
+
+.jc-overlay-interactive .jc-box:hover .jc-box-handle,
+.jc-overlay-interactive .jc-box.is-selected .jc-box-handle,
+.jc-overlay-interactive .jc-box.is-editing .jc-box-handle {
+  display: block;
+}
+
+.jc-box-handle-nw {
+  left: -7px;
+  top: -7px;
+  cursor: nwse-resize;
+}
+
+.jc-box-handle-n {
+  left: 50%;
+  top: -7px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.jc-box-handle-ne {
+  right: -7px;
+  top: -7px;
+  cursor: nesw-resize;
+}
+
+.jc-box-handle-e {
+  right: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.jc-box-handle-se {
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+
+.jc-box-handle-s {
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.jc-box-handle-sw {
+  left: -7px;
+  bottom: -7px;
+  cursor: nesw-resize;
+}
+
+.jc-box-handle-w {
+  left: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
 }
 
 .jc-overlay-empty {

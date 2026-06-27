@@ -350,7 +350,7 @@ class QwenEngine:
             )
             rows = json_to_element_rows(parsed_json)
             overlay_source = _image_for_overlay(image_path, output_image_path)
-            overlay = overlay_html(overlay_source, rows)
+            overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="xyxy")
             warning_html = ""
             if warnings:
                 warning_html = "<br>Warnings:<br><pre>" + "\n".join(warnings) + "</pre>"

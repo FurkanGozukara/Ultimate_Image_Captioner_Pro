@@ -5,7 +5,15 @@ from typing import Any
 import gradio as gr
 
 from ..common import IMAGE_EXTENSIONS, html_message
-from ..json_tools import ELEMENT_HEADERS, EMPTY_ELEMENT_ROW, apply_rows_to_json, json_to_element_rows, normalize_json_output, overlay_html
+from ..json_tools import (
+    EMPTY_ELEMENT_ROW,
+    apply_rows_to_json,
+    clean_bbox_order,
+    headers_for_bbox_order,
+    json_to_element_rows,
+    normalize_json_output,
+    overlay_html,
+)
 from ..qwen_presets import default_qwen_preset_id, preset_payload, qwen_preset_choices
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, qwen_vram_settings
 from .shared import TabUI, run_open_folder, run_open_outputs, settings_from_values
@@ -15,6 +23,11 @@ DEFAULT_PRESET_ID = default_qwen_preset_id()
 DEFAULT_VRAM = default_vram_preset()
 DEFAULT_PAYLOAD = preset_payload(DEFAULT_PRESET_ID)
 DEFAULT_VRAM_SETTINGS = qwen_vram_settings(DEFAULT_VRAM)
+DEFAULT_BBOX_ORDER = "xyxy"
+BBOX_ORDER_CHOICES = [
+    ("x_min, y_min, x_max, y_max", "xyxy"),
+    ("y_min, x_min, y_max, x_max", "yxyx"),
+]
 
 ORDER = [
     "vram_preset",
@@ -119,6 +132,164 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+OVERLAY_EDIT_JS = r"""
+if (!element.dataset.jcQwenOverlayBound) {
+  element.dataset.jcQwenOverlayBound = "1";
+
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+  const rowsForFrame = (frame) => {
+    try {
+      const rows = JSON.parse(frame.dataset.rows || "[]");
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const frameRect = (frame) => {
+    const img = frame.querySelector(".jc-overlay-image");
+    const rect = (img && img.naturalWidth > 0) ? img.getBoundingClientRect() : frame.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  };
+
+  const selectBox = (box) => {
+    const frame = box.closest(".jc-overlay-frame");
+    if (!frame) return;
+    frame.querySelectorAll(".jc-box.is-selected").forEach((item) => item.classList.remove("is-selected"));
+    box.classList.add("is-selected");
+  };
+
+  const applyBoxRect = (box, rect, surface) => {
+    box.style.left = `${(rect.left / surface.width) * 100}%`;
+    box.style.top = `${(rect.top / surface.height) * 100}%`;
+    box.style.width = `${(rect.width / surface.width) * 100}%`;
+    box.style.height = `${(rect.height / surface.height) * 100}%`;
+  };
+
+  const boxRect = (box, surface) => {
+    const rect = box.getBoundingClientRect();
+    return {
+      left: rect.left - surface.left,
+      top: rect.top - surface.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  };
+
+  const commitFrame = (frame, activeIndex) => {
+    const surface = frameRect(frame);
+    if (!surface.width || !surface.height) return;
+    const rows = rowsForFrame(frame);
+    const activeBox = frame.querySelector(`.jc-box[data-row-index="${activeIndex}"]`);
+    if (!activeBox || !rows[activeIndex]) return;
+    const rect = boxRect(activeBox, surface);
+    const xMin = clamp(Math.round((rect.left / surface.width) * 1000), 0, 999);
+    const yMin = clamp(Math.round((rect.top / surface.height) * 1000), 0, 999);
+    const xMax = clamp(Math.round(((rect.left + rect.width) / surface.width) * 1000), xMin + 1, 1000);
+    const yMax = clamp(Math.round(((rect.top + rect.height) / surface.height) * 1000), yMin + 1, 1000);
+    const bboxOrder = (frame.dataset.bboxOrder || "yxyx").toLowerCase();
+    if (bboxOrder === "xyxy") {
+      rows[activeIndex][1] = xMin;
+      rows[activeIndex][2] = yMin;
+      rows[activeIndex][3] = xMax;
+      rows[activeIndex][4] = yMax;
+    } else {
+      rows[activeIndex][1] = yMin;
+      rows[activeIndex][2] = xMin;
+      rows[activeIndex][3] = yMax;
+      rows[activeIndex][4] = xMax;
+    }
+    trigger("click", { action: "box-edit", rows, index: activeIndex });
+  };
+
+  const bindFrame = (frame) => {
+    if (frame.dataset.jcQwenFrameBound || !frame.closest(".jc-overlay-interactive")) return;
+    frame.dataset.jcQwenFrameBound = "1";
+
+    frame.addEventListener("pointerdown", (event) => {
+      const box = event.target.closest(".jc-box");
+      if (!box || !frame.contains(box)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectBox(box);
+
+      const surface = frameRect(frame);
+      if (!surface.width || !surface.height) return;
+      const start = boxRect(box, surface);
+      const handle = event.target.dataset.handle || "move";
+      const startPointer = { x: event.clientX, y: event.clientY };
+      const minSize = Math.max(12, Math.min(surface.width, surface.height) * 0.015);
+      const activeIndex = Number(box.dataset.rowIndex);
+      let changed = false;
+
+      box.setPointerCapture?.(event.pointerId);
+      box.classList.add("is-editing");
+
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - startPointer.x;
+        const dy = moveEvent.clientY - startPointer.y;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) changed = true;
+
+        let left = start.left;
+        let top = start.top;
+        let width = start.width;
+        let height = start.height;
+
+        if (handle === "move") {
+          left = clamp(start.left + dx, 0, surface.width - width);
+          top = clamp(start.top + dy, 0, surface.height - height);
+        } else {
+          if (handle.includes("e")) width = clamp(start.width + dx, minSize, surface.width - start.left);
+          if (handle.includes("s")) height = clamp(start.height + dy, minSize, surface.height - start.top);
+          if (handle.includes("w")) {
+            const nextLeft = clamp(start.left + dx, 0, start.left + start.width - minSize);
+            width = start.left + start.width - nextLeft;
+            left = nextLeft;
+          }
+          if (handle.includes("n")) {
+            const nextTop = clamp(start.top + dy, 0, start.top + start.height - minSize);
+            height = start.top + start.height - nextTop;
+            top = nextTop;
+          }
+        }
+
+        applyBoxRect(box, { left, top, width, height }, surface);
+      };
+
+      const up = () => {
+        box.classList.remove("is-editing");
+        box.releasePointerCapture?.(event.pointerId);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("mouseup", up);
+        if (changed) {
+          if (frame.dataset.disableAutoUpdate === "1") {
+            applyBoxRect(box, start, surface);
+          } else {
+            commitFrame(frame, activeIndex);
+          }
+        }
+      };
+
+      window.addEventListener("pointermove", move);
+      window.addEventListener("mousemove", move);
+      window.addEventListener("pointerup", up, { once: true });
+      window.addEventListener("mouseup", up, { once: true });
+    });
+  };
+
+  const install = () => {
+    element.querySelectorAll(".jc-overlay-frame").forEach(bindFrame);
+  };
+
+  watch("value", () => queueMicrotask(install));
+  queueMicrotask(install);
+}
+"""
+
+
 def _variables(
     trigger_phrase,
     output_language,
@@ -151,9 +322,76 @@ def _variables(
     }
 
 
+def _row_data(rows: Any) -> list[list[Any]]:
+    if isinstance(rows, dict) and "data" in rows:
+        rows = rows["data"]
+    return [list(row) for row in (rows or []) if isinstance(row, (list, tuple))]
+
+
+def _df_value(rows: Any, bbox_order: str = DEFAULT_BBOX_ORDER) -> dict[str, Any]:
+    return {"headers": headers_for_bbox_order(bbox_order), "data": _row_data(rows)}
+
+
+def _visible_rows(rows: Any, selected: Any) -> list[list[Any]]:
+    row_data = _row_data(rows)
+    return [row_data[index] for index in _choice_indices(selected) if index < len(row_data)]
+
+
+def _visible_df_value(rows: Any, selected: Any, bbox_order: str = DEFAULT_BBOX_ORDER) -> dict[str, Any]:
+    return _df_value(_visible_rows(rows, selected), bbox_order)
+
+
+def _merge_visible_rows(all_rows: Any, selected: Any, visible_rows: Any) -> list[list[Any]]:
+    merged = _row_data(all_rows)
+    visible_data = _row_data(visible_rows)
+    for target_index, row in zip(_choice_indices(selected), visible_data):
+        if 0 <= target_index < len(merged):
+            merged[target_index] = row
+    return merged
+
+
+def _box_choices(rows: Any) -> list[str]:
+    choices: list[str] = []
+    for index, row in enumerate(_row_data(rows), start=1):
+        values = row + [""] * max(0, 8 - len(row))
+        if not any(str(cell or "").strip() for cell in values):
+            continue
+        label = str(values[5] or values[6] or values[0] or "box")
+        label = " ".join(label.split())
+        if len(label) > 58:
+            label = label[:55] + "..."
+        choices.append(f"{index:02d} {values[0] or 'obj'} - {label}")
+    return choices
+
+
+def _choice_indices(selected: Any) -> list[int]:
+    if selected is None:
+        return []
+    if isinstance(selected, str):
+        selected = [selected]
+    indices: list[int] = []
+    for value in selected or []:
+        match = str(value).strip()[:2]
+        try:
+            indices.append(int(match) - 1)
+        except Exception:
+            continue
+    return [index for index in indices if index >= 0]
+
+
+def _preserve_visible(rows: Any, selected: Any, default_all: bool = False) -> tuple[list[str], list[str]]:
+    choices = _box_choices(rows)
+    selected_set = set(selected or [])
+    values = [choice for choice in choices if choice in selected_set]
+    if default_all and not values:
+        values = choices
+    return choices, values
+
+
 def build_tab(engine: Any) -> TabUI:
     components: dict[str, gr.components.Component] = {}
     global_error = gr.HTML(visible=False)
+    all_element_rows = gr.State([])
 
     with gr.Row(equal_height=False, elem_classes=["jc-qwen-grid"]):
         with gr.Column(scale=9, elem_classes=["jc-qwen-workspace"]):
@@ -164,7 +402,6 @@ def build_tab(engine: Any) -> TabUI:
                         single_btn = gr.Button("Caption Image", elem_classes=["btn-qwen-caption"])
                         single_cancel_btn = gr.Button("Cancel", elem_classes=["btn-cancel"])
                         open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"])
-                    single_status = gr.HTML("", elem_classes=["jc-qwen-status-scroll"])
 
                 with gr.Column(scale=5, elem_classes=["jc-compact"]):
                     output_caption = gr.Textbox(
@@ -178,19 +415,43 @@ def build_tab(engine: Any) -> TabUI:
                         apply_box_btn = gr.Button("Apply Box Edits", elem_classes=["btn-qwen-apply"])
                         add_box_btn = gr.Button("Add Box", elem_classes=["btn-json-add"])
                         clear_box_btn = gr.Button("Clear Boxes", elem_classes=["btn-reset-preset"])
-                    element_rows = gr.Dataframe(
-                        headers=ELEMENT_HEADERS,
-                        value=[],
-                        type="array",
-                        interactive=True,
-                        label="JSON Elements",
-                        max_height=210,
-                        datatype=["str", "number", "number", "number", "number", "str", "str", "str"],
-                        wrap=True,
-                    )
+
+            element_rows = gr.Dataframe(
+                headers=headers_for_bbox_order(DEFAULT_BBOX_ORDER),
+                value=_df_value([], DEFAULT_BBOX_ORDER),
+                type="array",
+                interactive=True,
+                label="JSON Elements",
+                max_height=320,
+                datatype=["str", "number", "number", "number", "number", "str", "str", "str"],
+                wrap=True,
+                elem_classes=["jc-qwen-elements-wide"],
+            )
 
             with gr.Accordion("JSON Box Preview", open=True, elem_classes=["jc-qwen-preview-panel"]):
-                json_overlay = gr.HTML("", elem_classes=["jc-qwen-overlay"])
+                with gr.Row(elem_classes=["jc-qwen-box-toolbar"]):
+                    bbox_order = gr.Radio(
+                        choices=BBOX_ORDER_CHOICES,
+                        value=DEFAULT_BBOX_ORDER,
+                        label="BBox Order",
+                        scale=4,
+                    )
+                    disable_auto_update = gr.Checkbox(
+                        label="Disable Auto Update Coordinates",
+                        value=True,
+                        scale=2,
+                    )
+                    check_all_boxes_btn = gr.Button("Check All", elem_classes=["btn-load-preset"], scale=1)
+                    uncheck_all_boxes_btn = gr.Button("Uncheck All", elem_classes=["btn-reset-preset"], scale=1)
+                box_visibility = gr.CheckboxGroup(
+                    choices=[],
+                    value=[],
+                    label="Visible Boxes",
+                    elem_classes=["jc-qwen-box-filter"],
+                )
+                json_overlay = gr.HTML("", elem_classes=["jc-qwen-overlay"], js_on_load=OVERLAY_EDIT_JS)
+
+            single_status = gr.HTML("", elem_classes=["jc-qwen-status-scroll", "jc-qwen-status-bottom"])
 
         with gr.Column(scale=4, elem_classes=["jc-compact", "jc-qwen-settings-rail"]):
             with gr.Accordion("Preset & Prompt", open=True):
@@ -362,31 +623,143 @@ def build_tab(engine: Any) -> TabUI:
         settings = settings_from_values(ORDER, values)
         yield from engine.run_batch_folder_processing(settings)
 
-    def render_json_boxes(image, caption_text):
+    def render_json_boxes(image, caption_text, bbox_order_value, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
         final, parsed, warnings = normalize_json_output(caption_text)
         rows = json_to_element_rows(parsed)
-        overlay = overlay_html(image, rows)
+        choices, visible = _preserve_visible(rows, [], default_all=True)
+        overlay = overlay_html(
+            image,
+            rows,
+            interactive=True,
+            bbox_order=bbox_order_value,
+            visible_indices=_choice_indices(visible),
+            disable_auto_update=bool(disable_auto_update_value),
+        )
         status = ""
         if warnings:
             status = html_message("info", "JSON rendered with warnings:<br><pre>" + "\n".join(warnings) + "</pre>")
-        return final, rows, overlay, status
+        return final, rows, _visible_df_value(rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
-    def apply_box_edits(image, caption_text, rows):
-        final, parsed, warnings = apply_rows_to_json(caption_text, rows)
-        overlay = overlay_html(image, json_to_element_rows(parsed))
+    def apply_box_edits(image, caption_text, all_rows, visible_rows, bbox_order_value, visible_choices, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        merged_rows = _merge_visible_rows(all_rows, visible_choices, visible_rows)
+        final, parsed, warnings = apply_rows_to_json(caption_text, merged_rows, bbox_order=bbox_order_value)
+        normalized_rows = json_to_element_rows(parsed)
+        choices, visible = _preserve_visible(normalized_rows, visible_choices, default_all=False)
+        overlay = overlay_html(
+            image,
+            normalized_rows,
+            interactive=True,
+            bbox_order=bbox_order_value,
+            visible_indices=_choice_indices(visible),
+            disable_auto_update=bool(disable_auto_update_value),
+        )
         status = html_message("success", "JSON box edits applied.")
         if warnings:
             status = html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + "\n".join(warnings) + "</pre>")
-        return final, overlay, status
+        return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
-    def add_box(rows):
-        rows = rows or []
-        if isinstance(rows, dict) and "data" in rows:
-            rows = rows["data"]
-        return [*rows, EMPTY_ELEMENT_ROW.copy()]
+    def apply_overlay_edit(image, caption_text, bbox_order_value, visible_choices, disable_auto_update_value, evt: gr.EventData):
+        if bool(disable_auto_update_value):
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        payload = getattr(evt, "_data", {}) or {}
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        final, parsed, _warnings = apply_rows_to_json(caption_text, rows, bbox_order=bbox_order_value)
+        normalized_rows = json_to_element_rows(parsed)
+        choices, visible = _preserve_visible(normalized_rows, visible_choices, default_all=False)
+        overlay = overlay_html(
+            image,
+            normalized_rows,
+            interactive=True,
+            bbox_order=bbox_order_value,
+            visible_indices=_choice_indices(visible),
+            disable_auto_update=False,
+        )
+        return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay
 
-    def clear_boxes():
-        return []
+    def add_box(all_rows, bbox_order_value, visible_choices):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        row_data = _row_data(all_rows)
+        next_rows = [*row_data, EMPTY_ELEMENT_ROW.copy()]
+        choices = _box_choices(next_rows)
+        selected = [choice for choice in choices if choice in set(visible_choices or [])]
+        if choices:
+            selected.append(choices[-1])
+        return next_rows, _visible_df_value(next_rows, selected, bbox_order_value), gr.update(choices=choices, value=selected)
+
+    def clear_boxes(bbox_order_value):
+        return [], _df_value([], bbox_order_value), gr.update(choices=[], value=[])
+
+    def update_box_visibility(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        return (
+            _visible_df_value(rows, visible_choices, bbox_order_value),
+            overlay_html(
+                image,
+                rows,
+                interactive=True,
+                bbox_order=bbox_order_value,
+                visible_indices=_choice_indices(visible_choices),
+                disable_auto_update=bool(disable_auto_update_value),
+            ),
+        )
+
+    def check_all_boxes(rows):
+        choices = _box_choices(rows)
+        return gr.update(choices=choices, value=choices)
+
+    def uncheck_all_boxes(rows):
+        choices = _box_choices(rows)
+        return gr.update(choices=choices, value=[])
+
+    def update_bbox_order(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        return (
+            _visible_df_value(rows, visible_choices, bbox_order_value),
+            overlay_html(
+                image,
+                rows,
+                interactive=True,
+                bbox_order=bbox_order_value,
+                visible_indices=_choice_indices(visible_choices),
+                disable_auto_update=bool(disable_auto_update_value),
+            ),
+        )
+
+    def update_auto_update_setting(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        return overlay_html(
+            image,
+            rows,
+            interactive=True,
+            bbox_order=bbox_order_value,
+            visible_indices=_choice_indices(visible_choices),
+            disable_auto_update=bool(disable_auto_update_value),
+        )
+
+    def sync_generated_rows(image, rows, bbox_order_value, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        choices, visible = _preserve_visible(rows, [], default_all=True)
+        return (
+            _visible_df_value(rows, visible, bbox_order_value),
+            gr.update(choices=choices, value=visible),
+            overlay_html(
+                image,
+                rows,
+                interactive=True,
+                bbox_order=bbox_order_value,
+                visible_indices=_choice_indices(visible),
+                disable_auto_update=bool(disable_auto_update_value),
+            ),
+        )
+
+    def update_generated_visibility(rows):
+        choices, visible = _preserve_visible(rows, [], default_all=True)
+        return gr.update(choices=choices, value=visible)
 
     preset_outputs = [
         components["system_prompt"],
@@ -415,17 +788,89 @@ def build_tab(engine: Any) -> TabUI:
         queue=False,
     )
 
-    single_btn.click(
+    single_event = single_btn.click(
         run_single,
         inputs=[input_image] + ordered_components,
-        outputs=[single_status, output_caption, json_overlay, element_rows, global_error],
+        outputs=[single_status, output_caption, json_overlay, all_element_rows, global_error],
+    )
+    single_event.then(
+        sync_generated_rows,
+        inputs=[input_image, all_element_rows, bbox_order, disable_auto_update],
+        outputs=[element_rows, box_visibility, json_overlay],
+        queue=False,
     )
     single_cancel_btn.click(engine.cancel_single, outputs=single_status, queue=False)
     open_outputs_btn.click(run_open_outputs, outputs=single_status, queue=False)
-    render_json_btn.click(render_json_boxes, inputs=[input_image, output_caption], outputs=[output_caption, element_rows, json_overlay, single_status])
-    apply_box_btn.click(apply_box_edits, inputs=[input_image, output_caption, element_rows], outputs=[output_caption, json_overlay, single_status])
-    add_box_btn.click(add_box, inputs=[element_rows], outputs=element_rows, queue=False)
-    clear_box_btn.click(clear_boxes, outputs=element_rows, queue=False)
+    render_json_btn.click(
+        render_json_boxes,
+        inputs=[input_image, output_caption, bbox_order, disable_auto_update],
+        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
+    )
+    apply_box_btn.click(
+        apply_box_edits,
+        inputs=[input_image, output_caption, all_element_rows, element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
+    )
+    json_overlay.click(
+        apply_overlay_edit,
+        inputs=[input_image, output_caption, bbox_order, box_visibility, disable_auto_update],
+        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay],
+        queue=False,
+    )
+    add_event = add_box_btn.click(
+        add_box,
+        inputs=[all_element_rows, bbox_order, box_visibility],
+        outputs=[all_element_rows, element_rows, box_visibility],
+        queue=False,
+    )
+    add_event.then(
+        update_box_visibility,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
+    clear_event = clear_box_btn.click(
+        clear_boxes,
+        inputs=[bbox_order],
+        outputs=[all_element_rows, element_rows, box_visibility],
+        queue=False,
+    )
+    clear_event.then(
+        update_box_visibility,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
+    box_visibility.change(
+        update_box_visibility,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
+    bbox_order.change(
+        update_bbox_order,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
+    disable_auto_update.change(
+        update_auto_update_setting,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=json_overlay,
+        queue=False,
+    )
+    check_all_boxes_btn.click(check_all_boxes, inputs=[all_element_rows], outputs=box_visibility, queue=False).then(
+        update_box_visibility,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
+    uncheck_all_boxes_btn.click(uncheck_all_boxes, inputs=[all_element_rows], outputs=box_visibility, queue=False).then(
+        update_box_visibility,
+        inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
+        outputs=[element_rows, json_overlay],
+        queue=False,
+    )
 
     zip_btn.click(
         run_zip,
