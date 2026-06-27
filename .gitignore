@@ -1,0 +1,11 @@
+
+venv
+model_files_alpha_one
+model_files_alpha_two
+model_files_beta_one
+model_files_pre_alpha
+presets
+outputs
+
+# Python cache directories
+**/__pycache__/
