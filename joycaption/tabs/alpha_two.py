@@ -6,10 +6,12 @@ import gradio as gr
 
 from ..common import get_all_extra_options
 from ..prompt_options import ALPHA_TWO_CAPTION_TYPE_MAP
+from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, legacy_vram_settings
 from .shared import TabUI, error_triple, run_open_folder, run_open_outputs, settings_from_values
 
 
 ORDER = [
+    "vram_preset",
     "overwrite",
     "append",
     "remove_newlines",
@@ -42,6 +44,7 @@ ORDER = [
 ]
 
 DEFAULTS: dict[str, Any] = {
+    "vram_preset": default_vram_preset(),
     "overwrite": False,
     "append": False,
     "remove_newlines": True,
@@ -111,6 +114,12 @@ def build_tab(engine: Any) -> TabUI:
                 components["custom_prompt"] = gr.Textbox(label="Custom Prompt", lines=3, value=DEFAULTS["custom_prompt"])
 
             with gr.Accordion("Output", open=True):
+                components["vram_preset"] = gr.Dropdown(
+                    choices=VRAM_PRESET_CHOICES,
+                    value=DEFAULTS["vram_preset"],
+                    label="VRAM Preset",
+                    allow_custom_value=False,
+                )
                 with gr.Row():
                     components["overwrite"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite"])
                     components["append"] = gr.Checkbox(label="Append captions", value=DEFAULTS["append"])
@@ -171,11 +180,31 @@ def build_tab(engine: Any) -> TabUI:
         settings = settings_from_values(ORDER, values)
         yield from engine.batch_folder(settings)
 
+    def apply_vram_preset(vram_preset):
+        settings = legacy_vram_settings(vram_preset)
+        return (
+            settings["use_fp16"],
+            settings["use_4bit"],
+            settings["max_resolution"],
+            settings["batch_size"],
+        )
+
     caption_btn.click(run_single, inputs=[input_image] + ordered_components, outputs=[output_prompt, output_caption, save_info])
     cancel_single_btn.click(engine.cancel_single, outputs=save_info, queue=False)
     open_outputs_btn.click(run_open_outputs, outputs=save_info, queue=False)
     batch_btn.click(run_batch, inputs=ordered_components, outputs=batch_progress)
     stop_btn.click(engine.cancel_batch, outputs=batch_progress, queue=False)
     open_btn.click(run_open_folder, inputs=[components["output_folder"], components["input_folder"]], outputs=batch_progress)
+    components["vram_preset"].change(
+        apply_vram_preset,
+        inputs=[components["vram_preset"]],
+        outputs=[
+            components["use_fp16"],
+            components["use_4bit"],
+            components["max_resolution"],
+            components["batch_size"],
+        ],
+        queue=False,
+    )
 
     return TabUI(key="alpha_two", order=ORDER, defaults=DEFAULTS, inputs=ordered_components)

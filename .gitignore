@@ -9,3 +9,7 @@ outputs
 
 # Python cache directories
 **/__pycache__/
+*.png
+*.webp
+model_files_qwen3_vl3_8b_instruct
+*.log

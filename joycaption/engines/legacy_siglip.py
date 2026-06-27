@@ -50,6 +50,7 @@ from ..common import (
     parse_device_ids,
     remove_repeating_sentences,
     resolve_output_paths,
+    reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
     throttle_status,
@@ -742,6 +743,7 @@ class LegacySiglipEngine:
                 metadata_path=Path(data["metadata_path"]) if data.get("metadata_path") else None,
             )
         start = time.time()
+        reset_vram_peak_stats(parse_device_ids(settings.get("device_id", "0"), allow_cpu=True))
         before_vram = vram_usage_text()
         log_event(f"Loading image: {image_path}", self.config.title)
         image = load_rgb_image(image_path, int(settings.get("max_resolution", 1536) or 1536))
@@ -837,6 +839,7 @@ class LegacySiglipEngine:
 
         self.stop_flag.reset()
         devices = parse_device_ids(settings.get("gpu_ids") or settings.get("device_id") or "0", allow_cpu=True)
+        reset_vram_peak_stats(devices)
         batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         progress_text = (
             f"Starting {self.config.title} folder batch.\n"

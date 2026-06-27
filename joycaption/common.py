@@ -225,6 +225,7 @@ def save_numbered_generation(
     metadata: dict[str, Any],
     output_root: str | Path = OUTPUTS_DIR,
     copy_image: bool = True,
+    caption_extension: str = ".txt",
 ) -> tuple[Path | None, Path, Path, Path]:
     run_dir = next_numbered_output_dir(output_root)
 
@@ -243,7 +244,10 @@ def save_numbered_generation(
                 output_image_path = run_dir / source_name
                 copy_image_if_needed(source_path, output_image_path, True)
 
-    caption_path = run_dir / f"{caption_stem}.txt"
+    extension = str(caption_extension or ".txt").strip()
+    if not extension.startswith("."):
+        extension = f".{extension}"
+    caption_path = run_dir / f"{caption_stem}{extension}"
     caption_path.write_text(caption, encoding="utf-8")
 
     metadata_path = run_dir / "metadata.json"
@@ -460,6 +464,23 @@ def vram_usage_text() -> str:
         return "\n".join(lines)
     except Exception as exc:
         return f"VRAM: unavailable ({exc})"
+
+
+def reset_vram_peak_stats(device_ids: Sequence[int | str] | None = None) -> None:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        targets = list(device_ids) if device_ids else list(range(torch.cuda.device_count()))
+        for device_id in targets:
+            if str(device_id).lower() == "cpu":
+                continue
+            index = int(device_id)
+            if 0 <= index < torch.cuda.device_count():
+                torch.cuda.reset_peak_memory_stats(index)
+    except Exception:
+        return
 
 
 def optimization_status_text(settings: dict[str, Any]) -> str:

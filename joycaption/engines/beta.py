@@ -43,6 +43,7 @@ from ..common import (
     natural_sort_key,
     parse_device_ids,
     remove_repeating_sentences,
+    reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
     optimization_status_text,
@@ -437,6 +438,7 @@ class BetaEngine:
         try:
             start = time.time()
             yield html_message("info", "Loading model..."), "", ""
+            reset_vram_peak_stats(parse_device_ids(device_id, allow_cpu=True))
             before_vram = vram_usage_text()
             status = self.load_model(quant, device_id, optimizations)
             yield html_message("info", f"{status} Generating caption..."), "", ""
@@ -570,6 +572,7 @@ class BetaEngine:
         self.stop_flag.reset()
         try:
             yield html_message("info", "Loading model..."), None, ""
+            reset_vram_peak_stats(parse_device_ids(device_id, allow_cpu=True))
             before_vram = vram_usage_text()
             self.load_model(quant, device_id, optimizations)
             paths = sorted([self._file_path(item) for item in files_list], key=natural_sort_key)
@@ -722,6 +725,7 @@ class BetaEngine:
 
             prompt = self.build_prompt(caption_type, caption_length, extra_options, name_input, custom_prompt_text)
             yield html_message("info", "Loading model..."), ""
+            reset_vram_peak_stats(parse_device_ids(device_id, allow_cpu=True))
             before_vram = vram_usage_text()
             self.load_model(quant, device_id, optimizations)
             total = len(paths)

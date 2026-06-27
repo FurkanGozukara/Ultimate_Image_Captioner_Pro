@@ -9,8 +9,9 @@ from typing import Any
 
 from PIL import Image
 
-from .common import BASE_DIR, OUTPUTS_DIR, apply_torch_optimizations, log_event, optimization_status_text, save_numbered_generation, vram_usage_text
+from .common import BASE_DIR, OUTPUTS_DIR, apply_torch_optimizations, log_event, optimization_status_text, parse_device_ids, reset_vram_peak_stats, save_numbered_generation, vram_usage_text
 from .engines.beta import BetaEngine
+from .engines.qwen import QwenEngine
 from .engines.legacy_siglip import (
     create_alpha_one_engine,
     create_alpha_two_engine,
@@ -70,6 +71,7 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
     engine = BetaEngine(BASE_DIR / "model_files_beta_one")
     start = time.time()
     image = Image.open(payload["image_path"]).convert("RGB")
+    reset_vram_peak_stats(parse_device_ids(settings.get("device_id") or "0", allow_cpu=True))
     before_vram = vram_usage_text()
     engine.load_model(str(settings["quant"]), str(settings["device_id"]), settings)
     log_event("Beta model loaded. Generating caption.", "Worker")
@@ -195,12 +197,75 @@ def beta_folder(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "status": last_status, "error": error_html}
 
 
+def qwen_single(payload: dict[str, Any]) -> dict[str, Any]:
+    log_event("Qwen single start.", "Worker")
+    settings = dict(payload["settings"])
+    settings["use_subprocess"] = False
+    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    last_status = ""
+    caption = ""
+    overlay = ""
+    element_rows: list[list[Any]] = []
+    error_html = ""
+    for status, output, overlay_html, rows, error in engine.caption_single(payload["image_path"], settings):
+        last_status = status
+        caption = output or caption
+        overlay = overlay_html or overlay
+        element_rows = rows or element_rows
+        error_html = error or error_html
+    engine.clear_models()
+    log_event("Qwen single complete.", "Worker")
+    return {
+        "ok": True,
+        "status": last_status,
+        "caption": caption,
+        "overlay": overlay,
+        "element_rows": element_rows,
+        "error": error_html,
+    }
+
+
+def qwen_zip(payload: dict[str, Any]) -> dict[str, Any]:
+    log_event("Qwen files-to-ZIP batch start.", "Worker")
+    settings = dict(payload["settings"])
+    settings["use_subprocess"] = False
+    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    last_status = ""
+    zip_path = None
+    error_html = ""
+    for status, output, error in engine.process_batch_files_to_zip(payload["files"], settings):
+        last_status = status
+        zip_path = output or zip_path
+        error_html = error or error_html
+    engine.clear_models()
+    log_event("Qwen files-to-ZIP batch complete.", "Worker")
+    return {"ok": True, "status": last_status, "zip_path": zip_path, "error": error_html}
+
+
+def qwen_folder(payload: dict[str, Any]) -> dict[str, Any]:
+    log_event("Qwen folder batch start.", "Worker")
+    settings = dict(payload["settings"])
+    settings["use_subprocess"] = False
+    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    last_status = ""
+    error_html = ""
+    for status, error in engine.run_batch_folder_processing(settings):
+        last_status = status
+        error_html = error or error_html
+    engine.clear_models()
+    log_event("Qwen folder batch complete.", "Worker")
+    return {"ok": True, "status": last_status, "error": error_html}
+
+
 COMMANDS = {
     "legacy_single": legacy_single,
     "legacy_batch": legacy_batch,
     "beta_single": beta_single,
     "beta_zip": beta_zip,
     "beta_folder": beta_folder,
+    "qwen_single": qwen_single,
+    "qwen_zip": qwen_zip,
+    "qwen_folder": qwen_folder,
 }
 
 

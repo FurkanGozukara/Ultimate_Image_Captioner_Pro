@@ -11,11 +11,12 @@ from starlette.exceptions import StarletteDeprecationWarning
 
 from joycaption import APP_NAME
 from joycaption.common import BASE_DIR, OUTPUTS_DIR, TEST_IMAGES_DIR, ensure_runtime_dirs, html_message
-from joycaption.lazy_engines import LazyBetaEngine, LazyLegacyEngine
+from joycaption.lazy_engines import LazyBetaEngine, LazyLegacyEngine, LazyQwenEngine
 from joycaption.presets import UniversalPresetStore
 from joycaption.styles import CUSTOM_CSS
-from joycaption.tabs import alpha_one, alpha_two, beta_one, pre_alpha
+from joycaption.tabs import alpha_one, alpha_two, beta_one, json_builder, output_browser, pre_alpha, qwen
 from joycaption.tabs.shared import TabUI, values_for_settings
+from joycaption.vram import gpu_summary_html
 
 
 warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
@@ -68,18 +69,22 @@ def build_app() -> gr.Blocks:
     alpha1_engine = LazyLegacyEngine("alpha_one", BASE_DIR)
     alpha2_engine = LazyLegacyEngine("alpha_two", BASE_DIR)
     beta_engine = LazyBetaEngine(BASE_DIR / "model_files_beta_one")
+    qwen_engine = LazyQwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
 
     with gr.Blocks(title=APP_NAME) as demo:
         with gr.Column(elem_id="jc-shell"):
             with gr.Row(elem_classes=["jc-topbar"]):
-                with gr.Column(elem_classes=["jc-brand"]):
+                with gr.Column(scale=1, elem_classes=["jc-brand"]):
                     gr.HTML(
                         """
                         <h1>Ultimate Image Captioner Pro</h1>
                         <p>Unified Pre-Alpha, Alpha, and Beta captioning workspace.</p>
                         """
                     )
-                with gr.Column(elem_classes=["jc-preset-panel"]):
+                    with gr.Column(elem_classes=["jc-header-status"]):
+                        preset_status = gr.HTML("")
+                        gr.HTML(gpu_summary_html(), elem_classes=["jc-gpu-summary"])
+                with gr.Column(scale=1, elem_classes=["jc-preset-panel"]):
                     gr.Markdown("**Universal Preset**")
                     with gr.Row():
                         preset_dropdown = gr.Dropdown(
@@ -95,13 +100,14 @@ def build_app() -> gr.Blocks:
                         load_preset_btn = gr.Button("Load", elem_classes=["btn-load-preset"])
                         reset_preset_btn = gr.Button("Reset", elem_classes=["btn-reset-preset"])
                         delete_preset_btn = gr.Button("Delete", elem_classes=["btn-delete-preset"])
-                    preset_status = gr.HTML("")
 
             tabs: list[TabUI] = [
                 TabUI("global", GLOBAL_ORDER, GLOBAL_DEFAULTS, [theme_mode]),
             ]
 
             with gr.Tabs(elem_id="jc-main-tabs", elem_classes=["jc-main-tabs"]):
+                with gr.Tab("Qwen3 VL 8B Instruct", render_children=True):
+                    tabs.append(qwen.build_tab(qwen_engine))
                 with gr.Tab("Joy Caption Pre Alpha", render_children=True):
                     tabs.append(pre_alpha.build_tab(pre_engine))
                 with gr.Tab("Joy Caption Alpha 1", render_children=True):
@@ -110,6 +116,10 @@ def build_app() -> gr.Blocks:
                     tabs.append(alpha_two.build_tab(alpha2_engine))
                 with gr.Tab("Joy Caption Beta 1", render_children=True):
                     tabs.append(beta_one.build_tab(beta_engine))
+                with gr.Tab("JSON Prompt Builder", render_children=True):
+                    tabs.append(json_builder.build_tab())
+                with gr.Tab("Saved Outputs", render_children=True):
+                    tabs.append(output_browser.build_tab())
 
             flat_inputs: list[gr.components.Component] = []
             for tab in tabs:

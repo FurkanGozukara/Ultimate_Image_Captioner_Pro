@@ -7,10 +7,12 @@ import gradio as gr
 
 from ..common import NAME_OPTION, get_all_extra_options, html_message, save_custom_extra_option
 from ..prompt_options import BETA_CAPTION_TYPE_MAP as CAPTION_TYPE_MAP
+from ..vram import VRAM_PRESET_CHOICES, beta_vram_settings, default_vram_preset
 from .shared import TabUI, run_open_folder, run_open_outputs
 
 
 ORDER = [
+    "vram_preset",
     "model_quantization",
     "unload_model",
     "save_image",
@@ -48,6 +50,7 @@ ORDER = [
 ]
 
 DEFAULTS: dict[str, Any] = {
+    "vram_preset": default_vram_preset(),
     "model_quantization": "bf16",
     "unload_model": False,
     "save_image": True,
@@ -168,6 +171,12 @@ def build_tab(engine: Any) -> TabUI:
     with gr.Row(equal_height=False):
         with gr.Column(scale=1):
             with gr.Accordion("Model", open=True):
+                components["vram_preset"] = gr.Dropdown(
+                    choices=VRAM_PRESET_CHOICES,
+                    value=DEFAULTS["vram_preset"],
+                    label="VRAM Preset",
+                    allow_custom_value=False,
+                )
                 components["model_quantization"] = gr.Radio(
                     choices=["bf16", "int8", "nf4"],
                     value=DEFAULTS["model_quantization"],
@@ -237,6 +246,15 @@ def build_tab(engine: Any) -> TabUI:
     def refresh_options():
         return html_message("success", "Extra options refreshed."), gr.update(choices=get_all_extra_options())
 
+    def apply_vram_preset(vram_preset):
+        settings = beta_vram_settings(vram_preset)
+        return (
+            settings["model_quantization"],
+            settings["downscale_max_res"],
+            settings["zip_batch_size"],
+            settings["folder_batch_size"],
+        )
+
     prompt_inputs = [
         components["caption_type"],
         components["caption_length"],
@@ -250,6 +268,17 @@ def build_tab(engine: Any) -> TabUI:
 
     add_option_btn.click(add_option, inputs=[new_extra_option], outputs=[option_status, components["extra_options"], new_extra_option])
     refresh_option_btn.click(refresh_options, outputs=[option_status, components["extra_options"]])
+    components["vram_preset"].change(
+        apply_vram_preset,
+        inputs=[components["vram_preset"]],
+        outputs=[
+            components["model_quantization"],
+            components["downscale_max_res"],
+            components["zip_batch_size"],
+            components["folder_batch_size"],
+        ],
+        queue=False,
+    )
 
     single_btn.click(
         engine.caption_single,

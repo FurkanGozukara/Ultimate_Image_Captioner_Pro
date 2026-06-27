@@ -42,6 +42,20 @@ button.btn-beta-zip { background: #0891b2 !important; color: #ffffff !important;
 button.btn-beta-folder { background: #16a34a !important; color: #ffffff !important; border-color: #16a34a !important; }
 .btn-beta-option button,
 button.btn-beta-option { background: #c2410c !important; color: #ffffff !important; border-color: #c2410c !important; }
+.btn-qwen-caption button,
+button.btn-qwen-caption { background: #6d28d9 !important; color: #ffffff !important; border-color: #6d28d9 !important; }
+.btn-qwen-render button,
+button.btn-qwen-render { background: #0f766e !important; color: #ffffff !important; border-color: #0f766e !important; }
+.btn-qwen-apply button,
+button.btn-qwen-apply { background: #2563eb !important; color: #ffffff !important; border-color: #2563eb !important; }
+.btn-qwen-zip button,
+button.btn-qwen-zip { background: #0891b2 !important; color: #ffffff !important; border-color: #0891b2 !important; }
+.btn-qwen-folder button,
+button.btn-qwen-folder { background: #16a34a !important; color: #ffffff !important; border-color: #16a34a !important; }
+.btn-json-build button,
+button.btn-json-build { background: #7c3aed !important; color: #ffffff !important; border-color: #7c3aed !important; }
+.btn-json-add button,
+button.btn-json-add { background: #0d9488 !important; color: #ffffff !important; border-color: #0d9488 !important; }
 .btn-open-folder button,
 button.btn-open-folder { background: #475569 !important; color: #ffffff !important; border-color: #475569 !important; }
 .btn-cancel button,
@@ -65,8 +79,202 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 .btn-beta-zip button:hover,
 .btn-beta-folder button:hover,
 .btn-beta-option button:hover,
+.btn-qwen-caption button:hover,
+.btn-qwen-render button:hover,
+.btn-qwen-apply button:hover,
+.btn-qwen-zip button:hover,
+.btn-qwen-folder button:hover,
+.btn-json-build button:hover,
+.btn-json-add button:hover,
 .btn-open-folder button:hover,
 .btn-cancel button:hover {
   filter: brightness(1.06);
+}
+
+.jc-topbar {
+  align-items: flex-start !important;
+  gap: 24px !important;
+  margin-bottom: 10px;
+}
+
+.jc-brand {
+  min-width: min(520px, 100%);
+}
+
+.jc-brand h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.jc-brand p {
+  margin: 0;
+}
+
+.jc-header-status {
+  gap: 4px !important;
+  margin-top: 18px;
+  max-width: 780px;
+}
+
+.jc-header-status .block {
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.jc-header-status .html-container,
+.jc-header-status .prose {
+  padding: 0 !important;
+  max-width: none !important;
+}
+
+.jc-header-status .jc-info,
+.jc-header-status .jc-success,
+.jc-header-status .jc-error {
+  margin: 0;
+}
+
+.jc-header-status .jc-info pre {
+  margin-top: 4px;
+}
+
+.jc-preset-panel {
+  min-width: min(560px, 100%);
+}
+
+.jc-codeish textarea,
+.jc-codeish input {
+  font-family: "JetBrains Mono", "Consolas", monospace !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.jc-qwen-workspace {
+  min-width: 0;
+}
+
+.jc-qwen-settings-rail {
+  min-width: 320px;
+}
+
+.block.jc-qwen-status-scroll {
+  max-height: 250px !important;
+  overflow: auto !important;
+  overflow-y: auto !important;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.28);
+  padding: 8px;
+}
+
+.block.jc-qwen-status-scroll:has(.prose.jc-qwen-status-scroll:empty) {
+  display: none !important;
+}
+
+.block.jc-qwen-status-scroll .html-container,
+.block.jc-qwen-status-scroll .prose.jc-qwen-status-scroll {
+  max-height: 232px !important;
+  overflow-y: auto !important;
+}
+
+.prose.jc-qwen-status-scroll {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  max-width: none !important;
+}
+
+.block.jc-qwen-status-scroll .jc-info,
+.block.jc-qwen-status-scroll .jc-success,
+.block.jc-qwen-status-scroll .jc-error {
+  margin: 0;
+}
+
+.jc-qwen-preview-panel {
+  margin-top: 10px;
+}
+
+.jc-qwen-preview-panel .jc-overlay-shell {
+  min-height: 360px;
+  max-height: 768px;
+}
+
+.jc-overlay-shell {
+  width: 100%;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.jc-overlay-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin: 0 auto;
+  background: #111827;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+}
+
+.jc-overlay-image {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 768px;
+}
+
+.jc-overlay-blank {
+  width: min(100%, 960px);
+  min-height: 320px;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.jc-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid;
+  border-radius: 4px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+.jc-box span {
+  position: absolute;
+  left: -2px;
+  top: -24px;
+  max-width: min(420px, 80vw);
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.jc-overlay-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.jc-info pre,
+.jc-success pre,
+.jc-error pre {
+  white-space: pre-wrap;
+  margin: 6px 0 0;
 }
 """

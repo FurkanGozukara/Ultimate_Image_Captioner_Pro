@@ -416,3 +416,104 @@ class LazyBetaEngine:
         if name:
             return Path(name)
         raise ValueError(f"Unsupported file object: {item!r}")
+
+
+class LazyQwenEngine:
+    def __init__(self, model_path: Path) -> None:
+        self.model_path = Path(model_path)
+        self._engine: Any | None = None
+        self._lock = threading.RLock()
+
+    def _get_engine(self) -> Any:
+        with self._lock:
+            if self._engine is None:
+                from .engines.qwen import QwenEngine
+
+                self._engine = QwenEngine(self.model_path)
+            return self._engine
+
+    def cancel_single(self) -> str:
+        count, message = cancel_active_workers(["qwen_single"])
+        if count:
+            return html_message("info", message)
+        return html_message("info", "No subprocess single-image worker is active. In-process single captioning cannot be cancelled.")
+
+    def cancel_batch(self) -> str:
+        count, message = cancel_active_workers(["qwen_zip", "qwen_folder"])
+        if self._engine is not None:
+            stop_message = str(self._engine.stop_batch())
+            return html_message("info", f"{message}<br>{stop_message}") if count else stop_message
+        return html_message("info", message if count else "No Qwen batch is active.")
+
+    def caption_single(self, input_image: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str], None, None]:
+        if not settings.get("use_subprocess", False):
+            yield from self._get_engine().caption_single(input_image, settings)
+            return
+        image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
+        if image_path is None:
+            yield html_message("error", "No image selected."), "", "", [], ""
+            return
+        try:
+            yield html_message("info", "Starting Qwen subprocess caption run..."), "", "", [], ""
+            data = run_worker(
+                "qwen_single",
+                {
+                    "image_path": str(image_path),
+                    "settings": {**settings, "use_subprocess": False},
+                },
+            )
+            yield (
+                str(data.get("status") or html_message("success", "Qwen subprocess captioning complete.")),
+                str(data.get("caption") or ""),
+                str(data.get("overlay") or ""),
+                data.get("element_rows") or [],
+                str(data.get("error") or ""),
+            )
+        except Exception as exc:
+            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen subprocess generation failed.")
+
+    def process_batch_files_to_zip(
+        self,
+        files_list: Sequence[Any] | None,
+        settings: dict[str, Any],
+    ) -> Generator[tuple[str, str | None, str], None, None]:
+        if not settings.get("use_subprocess", False):
+            yield from self._get_engine().process_batch_files_to_zip(files_list, settings)
+            return
+        if not files_list:
+            yield html_message("error", "No files selected."), None, ""
+            return
+        try:
+            yield html_message("info", "Starting Qwen subprocess ZIP batch..."), None, ""
+            data = run_worker(
+                "qwen_zip",
+                {
+                    "files": [str(self._file_path(item)) for item in files_list],
+                    "settings": {**settings, "use_subprocess": False},
+                },
+            )
+            yield str(data.get("status") or html_message("success", "Qwen ZIP batch complete.")), data.get("zip_path"), str(data.get("error") or "")
+        except Exception as exc:
+            yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen subprocess ZIP batch failed.")
+
+    def run_batch_folder_processing(self, settings: dict[str, Any]) -> Generator[tuple[str, str], None, None]:
+        if not settings.get("use_subprocess", False):
+            yield from self._get_engine().run_batch_folder_processing(settings)
+            return
+        try:
+            yield html_message("info", "Starting Qwen subprocess folder batch..."), ""
+            data = run_worker(
+                "qwen_folder",
+                {"settings": {**settings, "use_subprocess": False}},
+            )
+            yield str(data.get("status") or html_message("success", "Qwen folder batch complete.")), str(data.get("error") or "")
+        except Exception as exc:
+            yield html_message("error", format_exception(exc)), html_message("error", "Qwen subprocess folder batch failed.")
+
+    def _file_path(self, item: Any) -> Path:
+        if isinstance(item, (str, Path)):
+            return Path(item)
+        name = getattr(item, "name", None)
+        if name:
+            return Path(name)
+        raise ValueError(f"Unsupported file object: {item!r}")
