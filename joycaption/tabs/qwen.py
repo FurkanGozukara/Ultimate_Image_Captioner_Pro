@@ -623,9 +623,9 @@ def build_tab(engine: Any) -> TabUI:
         settings = settings_from_values(ORDER, values)
         yield from engine.run_batch_folder_processing(settings)
 
-    def render_json_boxes(image, caption_text, bbox_order_value, disable_auto_update_value):
+    def render_json_boxes(image, caption_text, preset_id_value, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
-        final, parsed, warnings = normalize_json_output(caption_text)
+        final, parsed, warnings = normalize_json_output(caption_text, preset_id=str(preset_id_value or ""))
         rows = json_to_element_rows(parsed)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         overlay = overlay_html(
@@ -803,7 +803,7 @@ def build_tab(engine: Any) -> TabUI:
     open_outputs_btn.click(run_open_outputs, outputs=single_status, queue=False)
     render_json_btn.click(
         render_json_boxes,
-        inputs=[input_image, output_caption, bbox_order, disable_auto_update],
+        inputs=[input_image, output_caption, components["preset_id"], bbox_order, disable_auto_update],
         outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
     )
     apply_box_btn.click(

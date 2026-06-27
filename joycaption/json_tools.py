@@ -85,11 +85,60 @@ def validate_ideogram_json(data: dict[str, Any]) -> list[str]:
     return warnings
 
 
+def validate_official_v1_json(data: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    expected_keys = ["aspect_ratio", "high_level_description", "compositional_deconstruction"]
+    actual_keys = list(data.keys())
+    for key in expected_keys:
+        if key not in data:
+            warnings.append(f'Missing top-level key "{key}".')
+    if "style_description" in data:
+        warnings.append('Official v1 preset should not include "style_description".')
+    extras = [key for key in actual_keys if key not in expected_keys]
+    if extras:
+        warnings.append("Official v1 preset has extra top-level key(s): " + ", ".join(f'"{key}"' for key in extras) + ".")
+    if actual_keys[: len(expected_keys)] != expected_keys:
+        warnings.append('Official v1 key order should be "aspect_ratio", "high_level_description", "compositional_deconstruction".')
+    aspect_ratio = data.get("aspect_ratio")
+    if not isinstance(aspect_ratio, str) or not re.fullmatch(r"\d+:\d+", aspect_ratio.strip()):
+        warnings.append('"aspect_ratio" must be a concrete W:H string such as "1:1" or "16:9".')
+    comp = data.get("compositional_deconstruction")
+    if not isinstance(comp, dict):
+        warnings.append('"compositional_deconstruction" must be an object.')
+        return warnings
+    if list(comp.keys())[:2] != ["background", "elements"]:
+        warnings.append('"compositional_deconstruction" key order should be "background" then "elements".')
+    if "background" not in comp:
+        warnings.append('Missing "compositional_deconstruction.background".')
+    elements = comp.get("elements")
+    if not isinstance(elements, list):
+        warnings.append('"compositional_deconstruction.elements" must be an array.')
+        return warnings
+    for index, element in enumerate(elements, start=1):
+        if not isinstance(element, dict):
+            warnings.append(f"Element {index} is not an object.")
+            continue
+        element_type = element.get("type")
+        if element_type not in {"obj", "text"}:
+            warnings.append(f'Element {index} type should be "obj" or "text".')
+        if element_type == "text" and "text" not in element:
+            warnings.append(f'Element {index} text element is missing "text".')
+        bbox = element.get("bbox")
+        if bbox is None:
+            continue
+        valid, message = validate_bbox(bbox)
+        if not valid:
+            warnings.append(f"Element {index} bbox: {message}")
+    return warnings
+
+
 def normalize_json_output(text: str, preset_id: str = "", compact: bool = False) -> tuple[str, dict[str, Any] | None, list[str]]:
     parsed, pretty, warnings = parse_json_caption(text)
     if parsed is None:
         return pretty, None, warnings
-    if preset_id.startswith("i4_json_"):
+    if preset_id.startswith("i4_official_v1"):
+        warnings.extend(validate_official_v1_json(parsed))
+    elif preset_id.startswith("i4_json_"):
         warnings.extend(validate_ideogram_json(parsed))
     normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(parsed, ensure_ascii=False, indent=2)
     return normalized, parsed, warnings

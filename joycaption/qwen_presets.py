@@ -11,6 +11,7 @@ from .common import BASE_DIR
 
 README_PATH = BASE_DIR.parent / "qwen3_vl_8b_caption_presets_README.md"
 MODEL_NAME = "Qwen/Qwen3-VL-8B-Instruct"
+OFFICIAL_V1_PRESET_ID = "i4_official_v1_app_compare"
 
 SPECIAL_TEXT_PROMPTS = {
     "txt_legacy_comma_tags",
@@ -173,6 +174,83 @@ def _fallback_presets() -> dict[str, QwenPreset]:
     return {preset.id: preset}
 
 
+def _official_v1_app_preset() -> QwenPreset:
+    system_prompt = (
+        "You are a precise image-to-JSON captioning engine. Produce exactly one valid JSON object "
+        "that follows the requested official Ideogram v1-style schema. Do not output markdown, "
+        "code fences, comments, labels, explanations, or extra text."
+    )
+    user_prompt = """Create an official Ideogram v1-style structured JSON caption for this image, adapted for this app's box editor.
+
+Return valid JSON only.
+
+The JSON object must use exactly these top-level keys in this order:
+1. "aspect_ratio"
+2. "high_level_description"
+3. "compositional_deconstruction"
+
+Do not include "style_description" in this preset.
+
+"aspect_ratio" must be a concrete W:H string inferred from the visible image shape, such as "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", or "2:3". Never output "auto".
+
+"high_level_description" must be one concise natural-language prompt sentence, 50 words maximum. Start directly with the subject or scene. Do not start with phrases like "this image shows", "depicts", or "captures". Include the visible subject, medium, and overall composition. For real people, do not identify the person by name; describe visible appearance only. For brands, products, fictional characters, landmarks, artworks, teams, and readable text, name them only when visually certain.
+
+Use "compositional_deconstruction" with this key order:
+1. "background"
+2. "elements"
+
+"background" describes only the scene shell and broad setting: sky, clouds, horizon, distant scenery, floor or ground surface, walls, ceiling, windows as architecture, atmosphere, plain backdrop, texture field, and scene-wide lighting. Do not duplicate main objects already listed as elements. Furniture, vehicles, equipment, people, animals, decor, signs, products, and props should be elements unless they are only distant background context.
+
+"elements" contains independently placeable subjects, objects, animals, products, props, logos, badges, panels, and readable text regions. Use one coherent subject as one element. Do not split a person, animal, vehicle, product, building, or plant into body parts or structural parts unless a separate part is independently important, such as a held prop, hat, mask, bag, readable logo, sign, or standalone accessory.
+
+Use element type "obj" for subjects and objects:
+{"type":"obj","bbox":[x_min,y_min,x_max,y_max],"desc":"..."}
+
+Use element type "text" for readable text:
+{"type":"text","bbox":[x_min,y_min,x_max,y_max],"text":"...","desc":"..."}
+
+For this app, bboxes must use normalized integer coordinates from 0 to 1000 in this order: [x_min, y_min, x_max, y_max], with the origin at the top-left. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably. Do not mention this bbox-order adaptation in the JSON output.
+
+Element descriptions should be concrete and visible-only. Identity first, then major attributes. For people, include visible skin tone, hair color and style, clothing colors, expression or gaze, pose, accessories, and held props when visible. For objects, include shape, material, color, distinctive parts, labels, logos, or markings when visible. Do not include shadows, camera/render jargon, hidden context, backstory, guessed names, guessed brands, or unreadable text guesses.
+
+For text elements, copy only legible text exactly as it appears. Preserve capitalization, punctuation, numbers, symbols, diacritics, and line breaks. If text is unclear, describe it as unreadable, cropped, blurred, or stylized marks instead of guessing.
+
+Prefer complete but not bloated output. Use bboxes for portrait subjects, products, signs, logos, text blocks, and distinct placeable objects. Omit bboxes for atmosphere, texture fields, dense crowds, repeated tiny details, stars, foliage masses, and particles.
+"""
+    return QwenPreset(
+        id=OFFICIAL_V1_PRESET_ID,
+        label="Ideogram Official v1 - App Compare",
+        output_format="json",
+        extension=".json",
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt,
+        max_new_tokens=4096,
+        temperature=0.1,
+        image_long_edge=1024,
+        raw_meta={
+            "id": OFFICIAL_V1_PRESET_ID,
+            "output_format": "json",
+            "extension": ".json",
+            "schema": "official_ideogram_v1_app_bbox_xyxy",
+            "source": "https://github.com/ideogram-oss/ideogram4/blob/main/src/ideogram4/magic_prompt_system_prompts/v1.txt",
+        },
+    )
+
+
+def _with_builtin_presets(presets: dict[str, QwenPreset]) -> dict[str, QwenPreset]:
+    official = _official_v1_app_preset()
+    result: dict[str, QwenPreset] = {}
+    inserted = False
+    for preset_id, preset in presets.items():
+        result[preset_id] = preset
+        if preset_id == "i4_json_auto_best":
+            result[official.id] = official
+            inserted = True
+    if not inserted:
+        result[official.id] = official
+    return result
+
+
 def _compose_prompt(preset_id: str, output_format: str, block_prompt: str, bases: dict[str, str]) -> str:
     if preset_id.startswith("i4_json_"):
         return "\n\n".join(part for part in [bases.get("i4", ""), block_prompt] if part).strip()
@@ -224,7 +302,7 @@ def _preset_from_block(
 def load_qwen_presets() -> dict[str, QwenPreset]:
     text = _read_readme()
     if not text:
-        return _fallback_presets()
+        return _with_builtin_presets(_fallback_presets())
 
     systems = _extract_system_prompts(text)
     a2 = _section_text(text, "## A2. Ideogram JSON base user prompt", "---\n\n## A3.")
@@ -252,7 +330,7 @@ def load_qwen_presets() -> dict[str, QwenPreset]:
         if preset:
             presets[preset.id] = preset
 
-    return presets or _fallback_presets()
+    return _with_builtin_presets(presets or _fallback_presets())
 
 
 def qwen_preset_choices() -> list[tuple[str, str]]:

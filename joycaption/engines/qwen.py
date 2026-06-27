@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import json
+import math
 import tempfile
 import time
 import traceback
@@ -11,6 +13,7 @@ from typing import Any, Generator, Sequence
 
 import torch
 from PIL import Image
+from PIL import ImageOps
 from transformers import AutoProcessor, BitsAndBytesConfig
 from transformers.utils import logging as hf_logging
 
@@ -46,6 +49,7 @@ from ..common import (
     vram_usage_text,
 )
 from ..json_tools import json_to_element_rows, normalize_json_output, overlay_html
+from ..qwen_presets import OFFICIAL_V1_PRESET_ID
 
 
 SCOPE = "Qwen3 VL 8B Instruct"
@@ -116,6 +120,73 @@ def _image_for_overlay(source: Path, saved_image: Path | None) -> Path:
         target = temp_dir / f"preview_{int(time.time() * 1000)}{source.suffix or '.png'}"
         copy_image_if_needed(source, target, True)
         return target
+
+
+def _oriented_image_size(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as image:
+        oriented = ImageOps.exif_transpose(image)
+        return oriented.size
+
+
+def _aspect_ratio_text(width: int, height: int) -> str:
+    width = max(1, int(width))
+    height = max(1, int(height))
+    divisor = math.gcd(width, height)
+    return f"{width // divisor}:{height // divisor}"
+
+
+def _settings_for_image(settings: dict[str, Any], image_path: Path, image: Image.Image) -> dict[str, Any]:
+    preset_id = str(settings.get("preset_id") or settings.get("id") or "")
+    if preset_id != OFFICIAL_V1_PRESET_ID:
+        return settings
+    try:
+        width, height = _oriented_image_size(image_path)
+    except Exception:
+        width, height = image.size
+    aspect_ratio = _aspect_ratio_text(width, height)
+    prompt = str(settings.get("prompt") or "").strip()
+    aspect_note = (
+        "\n\nExact input image geometry for this run:\n"
+        f"- Width: {int(width)} px\n"
+        f"- Height: {int(height)} px\n"
+        f"- Aspect ratio: {aspect_ratio}\n"
+        f'Set the JSON "aspect_ratio" value exactly to "{aspect_ratio}".'
+    )
+    next_settings = dict(settings)
+    next_settings["prompt"] = prompt + aspect_note
+    next_settings["detected_aspect_ratio"] = aspect_ratio
+    next_settings["detected_image_width"] = int(width)
+    next_settings["detected_image_height"] = int(height)
+    return next_settings
+
+
+def _apply_detected_aspect_ratio(
+    parsed: dict[str, Any] | None,
+    warnings: list[str],
+    settings: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    preset_id = str(settings.get("preset_id") or settings.get("id") or "")
+    if preset_id != OFFICIAL_V1_PRESET_ID or parsed is None:
+        return parsed, warnings
+    aspect_ratio = str(settings.get("detected_aspect_ratio") or "").strip()
+    if not aspect_ratio:
+        return parsed, warnings
+    ordered: dict[str, Any] = {
+        "aspect_ratio": aspect_ratio,
+        "high_level_description": parsed.get("high_level_description", ""),
+        "compositional_deconstruction": parsed.get("compositional_deconstruction", {"background": "", "elements": []}),
+    }
+    for key, value in parsed.items():
+        if key not in ordered:
+            ordered[key] = value
+    filtered_warnings = [
+        warning
+        for warning in warnings
+        if not warning.startswith('"aspect_ratio" must be')
+        and warning != 'Missing top-level key "aspect_ratio".'
+        and not warning.startswith("Official v1 key order should be")
+    ]
+    return ordered, filtered_warnings
 
 
 class QwenEngine:
@@ -296,6 +367,13 @@ class QwenEngine:
                     preset_id=str(settings.get("preset_id") or ""),
                     compact=bool(settings.get("compact_json", False)),
                 )
+            parsed, warnings = _apply_detected_aspect_ratio(parsed, warnings, settings)
+            if parsed is not None:
+                final = (
+                    json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                    if bool(settings.get("compact_json", False))
+                    else json.dumps(parsed, ensure_ascii=False, indent=2)
+                )
             return final, parsed, warnings
         return _normalize_text_output(raw_caption, settings), None, []
 
@@ -318,8 +396,9 @@ class QwenEngine:
             status = self.load_model(settings)
             yield html_message("info", f"{status} Generating..."), "", "", [], ""
             image = load_rgb_image(image_path, int(settings.get("image_long_edge", 1024) or 1024))
-            raw_caption = self.generate_caption(image, settings)
-            final_caption, parsed_json, warnings = self._finalize_output(image, raw_caption, settings)
+            image_settings = _settings_for_image(settings, image_path, image)
+            raw_caption = self.generate_caption(image, image_settings)
+            final_caption, parsed_json, warnings = self._finalize_output(image, raw_caption, image_settings)
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
             metadata = {
@@ -329,12 +408,12 @@ class QwenEngine:
                 "source_image_path": str(image_path),
                 "preset_id": settings.get("preset_id"),
                 "system_prompt": settings.get("system_prompt"),
-                "prompt": settings.get("prompt"),
+                "prompt": image_settings.get("prompt"),
                 "output_format": settings.get("output_format"),
                 "caption_raw": raw_caption,
                 "caption_final": final_caption,
                 "json_warnings": warnings,
-                "settings": dict(settings),
+                "settings": dict(image_settings),
                 "elapsed_seconds": time.time() - start,
                 "vram_before": before_vram,
                 "vram_after": after_vram,
@@ -406,8 +485,9 @@ class QwenEngine:
                     if self.stop_flag.value:
                         break
                     image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
-                    raw = self.generate_caption(image, settings)
-                    final, _parsed, warnings = self._finalize_output(image, raw, settings)
+                    image_settings = _settings_for_image(settings, path, image)
+                    raw = self.generate_caption(image, image_settings)
+                    final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
                     if warnings:
                         log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                     captions[path.with_suffix(extension).name] = final
@@ -484,8 +564,9 @@ class QwenEngine:
                             skipped += 1
                             continue
                         image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
-                        raw = self.generate_caption(image, settings)
-                        final, _parsed, warnings = self._finalize_output(image, raw, settings)
+                        image_settings = _settings_for_image(settings, path, image)
+                        raw = self.generate_caption(image, image_settings)
+                        final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
                         if warnings:
                             log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                         actual_caption = save_caption_file(
