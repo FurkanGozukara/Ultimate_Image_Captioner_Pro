@@ -13,3 +13,4 @@ outputs
 *.webp
 model_files_qwen3_vl3_8b_instruct
 *.log
+batch_test_runs

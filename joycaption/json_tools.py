@@ -402,6 +402,7 @@ def build_ideogram_json(
     color_palette: str,
     background: str,
     rows: Any,
+    bbox_order: str = "yxyx",
     compact: bool = False,
 ) -> str:
     palette = _palette_from_text(color_palette) or []
@@ -421,7 +422,7 @@ def build_ideogram_json(
         "style_description": style,
         "compositional_deconstruction": {
             "background": str(background or "").strip(),
-            "elements": rows_to_elements(rows),
+            "elements": rows_to_elements(rows, bbox_order=bbox_order),
         },
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(payload, ensure_ascii=False, indent=2)

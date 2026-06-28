@@ -265,11 +265,7 @@ if (!element.dataset.jcQwenOverlayBound) {
         window.removeEventListener("pointerup", up);
         window.removeEventListener("mouseup", up);
         if (changed) {
-          if (frame.dataset.disableAutoUpdate === "1") {
-            applyBoxRect(box, start, surface);
-          } else {
-            commitFrame(frame, activeIndex);
-          }
+          commitFrame(frame, activeIndex);
         }
       };
 
@@ -551,7 +547,7 @@ def build_tab(engine: Any) -> TabUI:
                 zip_output = gr.File(label="Caption ZIP")
 
         with gr.Column(scale=1, elem_classes=["jc-compact"]):
-            with gr.Accordion("Folder Batch", open=False):
+            with gr.Accordion("Folder Batch", open=True):
                 with gr.Row():
                     components["folder_input"] = gr.Textbox(label="Input Folder", value=DEFAULTS["folder_input"])
                     components["folder_output"] = gr.Textbox(label="Output Folder", value=DEFAULTS["folder_output"])
@@ -661,8 +657,6 @@ def build_tab(engine: Any) -> TabUI:
         return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def apply_overlay_edit(image, caption_text, bbox_order_value, visible_choices, disable_auto_update_value, evt: gr.EventData):
-        if bool(disable_auto_update_value):
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         bbox_order_value = clean_bbox_order(bbox_order_value)
         payload = getattr(evt, "_data", {}) or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
@@ -677,7 +671,7 @@ def build_tab(engine: Any) -> TabUI:
             interactive=True,
             bbox_order=bbox_order_value,
             visible_indices=_choice_indices(visible),
-            disable_auto_update=False,
+            disable_auto_update=bool(disable_auto_update_value),
         )
         return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay
 

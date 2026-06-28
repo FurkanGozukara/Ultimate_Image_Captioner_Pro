@@ -164,6 +164,10 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   margin-top: 10px;
 }
 
+.jc-hidden-sync {
+  display: none !important;
+}
+
 .block.jc-qwen-status-scroll {
   max-height: 250px !important;
   overflow: auto !important;
@@ -218,6 +222,67 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 .jc-qwen-box-filter fieldset {
   max-height: 118px;
   overflow: auto;
+}
+
+.jc-json-table-editor {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  background: #0b0d12;
+}
+
+.jc-json-builder-boxes-large .jc-json-table-editor {
+  min-height: 360px;
+  max-height: 560px;
+}
+
+.jc-json-table-editor table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.jc-json-table-editor th,
+.jc-json-table-editor td {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  padding: 0;
+}
+
+.jc-json-table-editor th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 8px;
+  background: #111318;
+  color: #f8fafc;
+  text-align: left;
+  font-weight: 800;
+}
+
+.jc-json-table-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #f8fafc;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.jc-json-table-editor input:focus {
+  outline: 2px solid #f97316;
+  outline-offset: -2px;
+  background: rgba(249, 115, 22, 0.1);
+}
+
+.jc-json-table-empty {
+  padding: 12px;
+  color: #94a3b8;
+  text-align: center;
 }
 
 .jc-qwen-preview-panel .jc-overlay-shell {
