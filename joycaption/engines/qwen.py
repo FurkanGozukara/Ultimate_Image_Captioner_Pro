@@ -137,7 +137,7 @@ def _aspect_ratio_text(width: int, height: int) -> str:
 
 def _settings_for_image(settings: dict[str, Any], image_path: Path, image: Image.Image) -> dict[str, Any]:
     preset_id = str(settings.get("preset_id") or settings.get("id") or "")
-    if preset_id != OFFICIAL_V1_PRESET_ID:
+    if not preset_id.startswith(("i4_official_v1", "i4_json_")):
         return settings
     try:
         width, height = _oriented_image_size(image_path)
@@ -166,7 +166,7 @@ def _apply_detected_aspect_ratio(
     settings: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, list[str]]:
     preset_id = str(settings.get("preset_id") or settings.get("id") or "")
-    if preset_id != OFFICIAL_V1_PRESET_ID or parsed is None:
+    if not preset_id.startswith(("i4_official_v1", "i4_json_")) or parsed is None:
         return parsed, warnings
     aspect_ratio = str(settings.get("detected_aspect_ratio") or "").strip()
     if not aspect_ratio:
@@ -176,9 +176,6 @@ def _apply_detected_aspect_ratio(
         "high_level_description": parsed.get("high_level_description", ""),
         "compositional_deconstruction": parsed.get("compositional_deconstruction", {"background": "", "elements": []}),
     }
-    for key, value in parsed.items():
-        if key not in ordered:
-            ordered[key] = value
     filtered_warnings = [
         warning
         for warning in warnings
@@ -371,7 +368,7 @@ class QwenEngine:
             if parsed is not None:
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-                    if bool(settings.get("compact_json", False))
+                    if bool(settings.get("compact_json", False)) or str(settings.get("preset_id") or "").startswith(("i4_official_v1", "i4_json_"))
                     else json.dumps(parsed, ensure_ascii=False, indent=2)
                 )
             return final, parsed, warnings
@@ -427,7 +424,7 @@ class QwenEngine:
                 copy_image=bool(settings.get("save_image", True)),
                 caption_extension=_caption_extension(settings),
             )
-            rows = json_to_element_rows(parsed_json)
+            rows = json_to_element_rows(parsed_json, bbox_order="xyxy")
             overlay_source = _image_for_overlay(image_path, output_image_path)
             overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="xyxy")
             warning_html = ""

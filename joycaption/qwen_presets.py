@@ -35,6 +35,39 @@ VARIABLE_DEFAULTS = {
     "IDEOGRAM_JSON_CAPTION": "",
 }
 
+OFFICIAL_V1_SCHEMA_OVERRIDE = """Official Ideogram 4 / v1 JSON schema override.
+
+Return exactly one JSON object with exactly these top-level keys in this order:
+1. "aspect_ratio"
+2. "high_level_description"
+3. "compositional_deconstruction"
+
+Do not include "style_description", "color_palette", markdown, comments, labels, or extra text.
+
+Use "compositional_deconstruction" with this key order:
+1. "background"
+2. "elements"
+
+Use object elements as:
+{"type":"obj","bbox":[y_min,x_min,y_max,x_max],"desc":"..."}
+
+Use readable text elements as:
+{"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"EXACT VISIBLE TEXT","desc":"..."}
+
+Bboxes use normalized integer coordinates from 0 to 1000 in official Ideogram order [y_min, x_min, y_max, x_max]. The origin is top-left. Omit "bbox" when localization is unreliable.
+
+"aspect_ratio" must be a concrete W:H string for the input image. Never output "auto".
+
+"high_level_description" is a concise natural-language prompt sentence, 50 words maximum. Put medium/style words here only when they are visible or useful.
+
+"background" describes only the scene shell and broad setting: sky, clouds, horizon, distant scenery, floor or ground surface, walls, ceiling, windows as architecture, atmosphere, plain backdrop, texture field, and scene-wide lighting.
+
+Element "desc" values are concrete visible-only captions for independently placeable subjects, objects, products, props, logos, panels, signs, badges, and text regions. Do not split a person, animal, vehicle, product, building, or plant into body parts.
+
+For text elements, "text" is only the literal readable characters in the image. Preserve capitalization, punctuation, symbols, diacritics, numbers, and line breaks. If text is unclear, do not guess it.
+
+If any preset-specific text mentions "style_description", element "color_palette", or an app-specific bbox order, treat that wording as legacy and ignore it. The output must follow the official schema above."""
+
 
 @dataclass(frozen=True)
 class QwenPreset:
@@ -53,8 +86,7 @@ class QwenPreset:
 
 def _read_readme() -> str:
     if README_PATH.exists():
-        text = README_PATH.read_text(encoding="utf-8")
-        return text.replace("[y_min, x_min, y_max, x_max]", "[x_min, y_min, x_max, y_max]")
+        return README_PATH.read_text(encoding="utf-8")
     return ""
 
 
@@ -137,7 +169,10 @@ def _system_prompt_for(preset_id: str, output_format: str, systems: dict[str, st
     if preset_id.startswith("qc_"):
         return systems.get("validation", "")
     if output_format == "json":
-        return systems.get("json", "")
+        return (
+            systems.get("json", "")
+            + "\n\nFor Ideogram 4 JSON, follow the official v1 schema exactly: aspect_ratio, high_level_description, compositional_deconstruction. Do not include style_description or color_palette."
+        ).strip()
     return systems.get("visual", "")
 
 
@@ -177,10 +212,10 @@ def _fallback_presets() -> dict[str, QwenPreset]:
 def _official_v1_app_preset() -> QwenPreset:
     system_prompt = (
         "You are a precise image-to-JSON captioning engine. Produce exactly one valid JSON object "
-        "that follows the requested official Ideogram v1-style schema. Do not output markdown, "
+        "that follows the requested official Ideogram 4 / v1 schema. Do not output markdown, "
         "code fences, comments, labels, explanations, or extra text."
     )
-    user_prompt = """Create an official Ideogram v1-style structured JSON caption for this image, adapted for this app's box editor.
+    user_prompt = """Create an official Ideogram 4 / v1 structured JSON caption for this image.
 
 Return valid JSON only.
 
@@ -189,7 +224,7 @@ The JSON object must use exactly these top-level keys in this order:
 2. "high_level_description"
 3. "compositional_deconstruction"
 
-Do not include "style_description" in this preset.
+Do not include "style_description" or "color_palette".
 
 "aspect_ratio" must be a concrete W:H string inferred from the visible image shape, such as "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", or "2:3". Never output "auto".
 
@@ -204,12 +239,12 @@ Use "compositional_deconstruction" with this key order:
 "elements" contains independently placeable subjects, objects, animals, products, props, logos, badges, panels, and readable text regions. Use one coherent subject as one element. Do not split a person, animal, vehicle, product, building, or plant into body parts or structural parts unless a separate part is independently important, such as a held prop, hat, mask, bag, readable logo, sign, or standalone accessory.
 
 Use element type "obj" for subjects and objects:
-{"type":"obj","bbox":[x_min,y_min,x_max,y_max],"desc":"..."}
+{"type":"obj","bbox":[y_min,x_min,y_max,x_max],"desc":"..."}
 
 Use element type "text" for readable text:
-{"type":"text","bbox":[x_min,y_min,x_max,y_max],"text":"...","desc":"..."}
+{"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"...","desc":"..."}
 
-For this app, bboxes must use normalized integer coordinates from 0 to 1000 in this order: [x_min, y_min, x_max, y_max], with the origin at the top-left. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably. Do not mention this bbox-order adaptation in the JSON output.
+Bboxes must use normalized integer coordinates from 0 to 1000 in official Ideogram order: [y_min, x_min, y_max, x_max], with the origin at the top-left. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably.
 
 Element descriptions should be concrete and visible-only. Identity first, then major attributes. For people, include visible skin tone, hair color and style, clothing colors, expression or gaze, pose, accessories, and held props when visible. For objects, include shape, material, color, distinctive parts, labels, logos, or markings when visible. Do not include shadows, camera/render jargon, hidden context, backstory, guessed names, guessed brands, or unreadable text guesses.
 
@@ -219,7 +254,7 @@ Prefer complete but not bloated output. Use bboxes for portrait subjects, produc
 """
     return QwenPreset(
         id=OFFICIAL_V1_PRESET_ID,
-        label="Ideogram Official v1 - App Compare",
+        label="Ideogram Official v1 - Ideogram 4",
         output_format="json",
         extension=".json",
         system_prompt=system_prompt,
@@ -231,7 +266,7 @@ Prefer complete but not bloated output. Use bboxes for portrait subjects, produc
             "id": OFFICIAL_V1_PRESET_ID,
             "output_format": "json",
             "extension": ".json",
-            "schema": "official_ideogram_v1_app_bbox_xyxy",
+            "schema": "official_ideogram_v1_yxyx",
             "source": "https://github.com/ideogram-oss/ideogram4/blob/main/src/ideogram4/magic_prompt_system_prompts/v1.txt",
         },
     )
@@ -252,8 +287,16 @@ def _with_builtin_presets(presets: dict[str, QwenPreset]) -> dict[str, QwenPrese
 
 
 def _compose_prompt(preset_id: str, output_format: str, block_prompt: str, bases: dict[str, str]) -> str:
+    if preset_id == OFFICIAL_V1_PRESET_ID:
+        return block_prompt.strip()
     if preset_id.startswith("i4_json_"):
-        return "\n\n".join(part for part in [bases.get("i4", ""), block_prompt] if part).strip()
+        final_reminder = (
+            "Final schema reminder: output exactly official Ideogram 4 / v1 JSON with only "
+            '"aspect_ratio", "high_level_description", and "compositional_deconstruction". '
+            'Use element "desc" for visual captions. Use element "text" only for literal readable text. '
+            'Never include "style_description", "color_palette", "box_title", markdown, or comments.'
+        )
+        return "\n\n".join(part for part in [OFFICIAL_V1_SCHEMA_OVERRIDE, block_prompt, final_reminder] if part).strip()
     if preset_id in SPECIAL_TEXT_PROMPTS:
         return block_prompt.strip()
     if preset_id.startswith("txt_"):
@@ -338,7 +381,7 @@ def qwen_preset_choices() -> list[tuple[str, str]]:
 
 
 def default_qwen_preset_id() -> str:
-    preferred = "i4_json_training_balanced"
+    preferred = OFFICIAL_V1_PRESET_ID
     presets = load_qwen_presets()
     return preferred if preferred in presets else next(iter(presets))
 

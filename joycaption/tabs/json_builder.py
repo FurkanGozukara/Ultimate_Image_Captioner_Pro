@@ -295,11 +295,12 @@ def _box_choices(rows: Any) -> list[str]:
         values = row + [""] * max(0, 8 - len(row))
         if not any(str(cell or "").strip() for cell in values):
             continue
-        label = str(values[5] or values[6] or values[0] or "box")
+        label = str(values[6] or values[5] or values[7] or values[0] or "box")
         label = " ".join(label.split())
         if len(label) > 58:
             label = label[:55] + "..."
-        choices.append(f"{index:02d} {values[0] or 'obj'} - {label}")
+        row_type = "text" if str(values[0] or "").strip() == "text" or str(values[7] or "").strip() else (values[0] or "obj")
+        choices.append(f"{index:02d} {row_type} - {label}")
     return choices
 
 
@@ -442,6 +443,9 @@ def build_tab() -> TabUI:
         )
 
     def _build_json(
+        ratio_value,
+        width_value,
+        height_value,
         high_level_value,
         style_mode_value,
         aesthetics_value,
@@ -455,6 +459,7 @@ def build_tab() -> TabUI:
         bbox_order_value,
     ):
         return build_ideogram_json(
+            _ratio(ratio_value, width_value, height_value),
             high_level_value,
             style_mode_value,
             aesthetics_value,
@@ -492,6 +497,9 @@ def build_tab() -> TabUI:
         merged_rows = _rows_from_snapshot(snapshot_value, all_rows)
         choices, visible = _preserve_visible(merged_rows, visible_choices, default_all=True)
         json_text = _build_json(
+            ratio_value,
+            width_value,
+            height_value,
             high_level_value,
             style_mode_value,
             aesthetics_value,
@@ -580,7 +588,7 @@ def build_tab() -> TabUI:
                 empty_overlay,
                 html_message("error", "Could not parse JSON.<br><pre>" + "\n".join(warnings) + "</pre>"),
             )
-        rows = json_to_element_rows(parsed)
+        rows = json_to_element_rows(parsed, bbox_order=bbox_order_value)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         fields = _fields_from_json(parsed)
         status_html = html_message("success", "JSON imported.")
@@ -681,7 +689,7 @@ def build_tab() -> TabUI:
                 empty_overlay,
                 html_message("error", "Loaded image, but same-name JSON could not be parsed.<br><pre>" + "\n".join(warnings) + "</pre>"),
             )
-        rows = json_to_element_rows(parsed)
+        rows = json_to_element_rows(parsed, bbox_order=bbox_order_value)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         fields = _fields_from_json(parsed)
         status_html = html_message("success", f"Loaded {image_path.name} and {sidecar.name}.")

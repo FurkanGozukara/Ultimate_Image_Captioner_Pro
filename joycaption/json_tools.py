@@ -8,8 +8,8 @@ from typing import Any
 from urllib.parse import quote
 
 
-ELEMENT_HEADERS = ["type", "y_min", "x_min", "y_max", "x_max", "text", "desc", "color_palette"]
-XYXY_ELEMENT_HEADERS = ["type", "x_min", "y_min", "x_max", "y_max", "text", "desc", "color_palette"]
+ELEMENT_HEADERS = ["type", "y_min", "x_min", "y_max", "x_max", "caption", "box_title", "text"]
+XYXY_ELEMENT_HEADERS = ["type", "x_min", "y_min", "x_max", "y_max", "caption", "box_title", "text"]
 EMPTY_ELEMENT_ROW = ["obj", 80, 80, 360, 360, "", "", ""]
 
 BOX_COLORS = [
@@ -58,31 +58,7 @@ def parse_json_caption(text: str) -> tuple[dict[str, Any] | None, str, list[str]
 
 
 def validate_ideogram_json(data: dict[str, Any]) -> list[str]:
-    warnings: list[str] = []
-    for key in ("high_level_description", "style_description", "compositional_deconstruction"):
-        if key not in data:
-            warnings.append(f'Missing top-level key "{key}".')
-    comp = data.get("compositional_deconstruction")
-    if not isinstance(comp, dict):
-        warnings.append('"compositional_deconstruction" must be an object.')
-        return warnings
-    if "background" not in comp:
-        warnings.append('Missing "compositional_deconstruction.background".')
-    elements = comp.get("elements")
-    if not isinstance(elements, list):
-        warnings.append('"compositional_deconstruction.elements" must be an array.')
-        return warnings
-    for index, element in enumerate(elements, start=1):
-        if not isinstance(element, dict):
-            warnings.append(f"Element {index} is not an object.")
-            continue
-        bbox = element.get("bbox")
-        if bbox is None:
-            continue
-        valid, message = validate_bbox(bbox)
-        if not valid:
-            warnings.append(f"Element {index} bbox: {message}")
-    return warnings
+    return validate_official_v1_json(data)
 
 
 def validate_official_v1_json(data: dict[str, Any]) -> list[str]:
@@ -123,6 +99,10 @@ def validate_official_v1_json(data: dict[str, Any]) -> list[str]:
             warnings.append(f'Element {index} type should be "obj" or "text".')
         if element_type == "text" and "text" not in element:
             warnings.append(f'Element {index} text element is missing "text".')
+        allowed_keys = {"type", "bbox", "desc", "text"} if element_type == "text" else {"type", "bbox", "desc"}
+        extra_keys = [key for key in element.keys() if key not in allowed_keys]
+        if extra_keys:
+            warnings.append(f"Element {index} has non-official key(s): " + ", ".join(f'\"{key}\"' for key in extra_keys) + ".")
         bbox = element.get("bbox")
         if bbox is None:
             continue
@@ -136,11 +116,10 @@ def normalize_json_output(text: str, preset_id: str = "", compact: bool = False)
     parsed, pretty, warnings = parse_json_caption(text)
     if parsed is None:
         return pretty, None, warnings
-    if preset_id.startswith("i4_official_v1"):
+    if preset_id.startswith(("i4_official_v1", "i4_json_")):
+        parsed = coerce_official_v1_payload(parsed, rows=None)
         warnings.extend(validate_official_v1_json(parsed))
-    elif preset_id.startswith("i4_json_"):
-        warnings.extend(validate_ideogram_json(parsed))
-    normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(parsed, ensure_ascii=False, indent=2)
+    normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if (compact or preset_id.startswith(("i4_official_v1", "i4_json_"))) else json.dumps(parsed, ensure_ascii=False, indent=2)
     return normalized, parsed, warnings
 
 
@@ -186,6 +165,21 @@ def bbox_to_yxyx(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
     return [first, second, third, fourth]
 
 
+def row_bbox_to_yxyx(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
+    first, second, third, fourth = clamp_bbox(*bbox)
+    if clean_bbox_order(bbox_order) == "xyxy":
+        x_min, y_min, x_max, y_max = first, second, third, fourth
+        return [y_min, x_min, y_max, x_max]
+    return [first, second, third, fourth]
+
+
+def yxyx_bbox_to_row(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
+    y_min, x_min, y_max, x_max = clamp_bbox(*bbox)
+    if clean_bbox_order(bbox_order) == "xyxy":
+        return [x_min, y_min, x_max, y_max]
+    return [y_min, x_min, y_max, x_max]
+
+
 def _palette_to_text(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value)
@@ -199,7 +193,7 @@ def _palette_from_text(value: Any) -> list[str] | None:
     return [part.strip() for part in re.split(r"[,;\n]", text) if part.strip()]
 
 
-def json_to_element_rows(data: dict[str, Any] | None) -> list[list[Any]]:
+def json_to_element_rows(data: dict[str, Any] | None, bbox_order: str = "yxyx") -> list[list[Any]]:
     if not isinstance(data, dict):
         return []
     comp = data.get("compositional_deconstruction")
@@ -214,16 +208,20 @@ def json_to_element_rows(data: dict[str, Any] | None) -> list[list[Any]]:
             continue
         bbox = element.get("bbox") if isinstance(element.get("bbox"), list) else ["", "", "", ""]
         bbox = list(bbox)[:4] + [""] * max(0, 4 - len(list(bbox)))
+        row_bbox = yxyx_bbox_to_row(bbox, bbox_order) if all(str(item).strip() for item in bbox) else bbox
+        element_type = "text" if element.get("type") == "text" else "obj"
+        caption = str(element.get("desc", "") or "")
+        official_text = str(element.get("text", "") or "") if element_type == "text" else ""
         rows.append(
             [
-                element.get("type", "obj"),
-                bbox[0],
-                bbox[1],
-                bbox[2],
-                bbox[3],
-                element.get("text", ""),
-                element.get("desc", ""),
-                _palette_to_text(element.get("color_palette")),
+                element_type,
+                row_bbox[0],
+                row_bbox[1],
+                row_bbox[2],
+                row_bbox[3],
+                caption,
+                str(element.get("box_title", "") or ""),
+                official_text,
             ]
         )
     return rows
@@ -241,40 +239,49 @@ def rows_to_elements(rows: Any, bbox_order: str = "yxyx") -> list[dict[str, Any]
         values = list(row) + [""] * max(0, len(ELEMENT_HEADERS) - len(row))
         element_type = str(values[0] or "obj").strip() or "obj"
         min_1, min_2, max_1, max_2 = values[1], values[2], values[3], values[4]
-        text_value = str(values[5] or "").strip()
-        desc_value = str(values[6] or "").strip()
-        palette = _palette_from_text(values[7])
-        element: dict[str, Any] = {"type": "text" if element_type == "text" else "obj"}
+        caption_value = str(values[5] or "").strip()
+        official_text_value = str(values[7] or "").strip()
+        element_is_text = element_type == "text" or bool(official_text_value)
+        element: dict[str, Any] = {"type": "text" if element_is_text else "obj"}
         if all(str(v).strip() for v in (min_1, min_2, max_1, max_2)):
-            element["bbox"] = clamp_bbox(min_1, min_2, max_1, max_2)
+            element["bbox"] = row_bbox_to_yxyx([min_1, min_2, max_1, max_2], bbox_order=bbox_order)
         if element["type"] == "text":
-            element["text"] = text_value
-        if desc_value:
-            element["desc"] = desc_value
-        elif element["type"] == "obj" and text_value:
-            element["desc"] = text_value
-        if palette:
-            element["color_palette"] = palette
+            text_value = official_text_value or caption_value
+            if text_value:
+                element["text"] = text_value
+            if official_text_value and caption_value:
+                element["desc"] = caption_value
+        elif caption_value:
+            element["desc"] = caption_value
         if element.get("desc") or element.get("text") or element.get("bbox"):
             elements.append(element)
     return elements
 
 
+def coerce_official_v1_payload(data: dict[str, Any] | None, rows: Any = None, bbox_order: str = "yxyx", aspect_ratio: str | None = None) -> dict[str, Any]:
+    source = data if isinstance(data, dict) else {}
+    comp = source.get("compositional_deconstruction") if isinstance(source.get("compositional_deconstruction"), dict) else {}
+    ratio = str(aspect_ratio or source.get("aspect_ratio") or "1:1").strip()
+    if not re.fullmatch(r"\d+:\d+", ratio):
+        ratio = "1:1"
+    if rows is not None:
+        elements = rows_to_elements(rows, bbox_order=bbox_order)
+    else:
+        elements = rows_to_elements(json_to_element_rows(source, bbox_order="yxyx"), bbox_order="yxyx")
+    return {
+        "aspect_ratio": ratio,
+        "high_level_description": str(source.get("high_level_description", "") or "").strip(),
+        "compositional_deconstruction": {
+            "background": str(comp.get("background", "") or "").strip(),
+            "elements": elements,
+        },
+    }
+
+
 def apply_rows_to_json(json_text: str, rows: Any, bbox_order: str = "yxyx") -> tuple[str, dict[str, Any] | None, list[str]]:
     data, _pretty, warnings = parse_json_caption(json_text)
-    if data is None:
-        data = {
-            "high_level_description": "",
-            "style_description": {},
-            "compositional_deconstruction": {"background": "", "elements": []},
-        }
-    comp = data.setdefault("compositional_deconstruction", {})
-    if not isinstance(comp, dict):
-        comp = {}
-        data["compositional_deconstruction"] = comp
-    comp.setdefault("background", "")
-    comp["elements"] = rows_to_elements(rows, bbox_order=bbox_order)
-    normalized = json.dumps(data, ensure_ascii=False, indent=2)
+    data = coerce_official_v1_payload(data, rows=rows, bbox_order=bbox_order)
+    normalized = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return normalized, data, warnings
 
 
@@ -331,17 +338,19 @@ def overlay_html(
     for row_index, values in enumerate(row_values):
         if visible_set is not None and row_index not in visible_set:
             continue
-        element = rows_to_elements([values], bbox_order=bbox_order)
-        if not element:
+        if not all(str(v).strip() for v in values[1:5]):
             continue
-        item = element[0]
-        bbox = item.get("bbox")
-        valid, _message = validate_bbox(bbox)
+        y_min, x_min, y_max, x_max = row_bbox_to_yxyx(values[1:5], bbox_order=bbox_order)
+        valid, _message = validate_bbox([y_min, x_min, y_max, x_max])
         if not valid:
             continue
-        y_min, x_min, y_max, x_max = bbox_to_yxyx(bbox, bbox_order=bbox_order)
         color = BOX_COLORS[(row_index) % len(BOX_COLORS)]
-        label = html.escape(_label_for_element(row_index + 1, item))
+        row_type = "text" if str(values[0] or "").strip() == "text" or str(values[7] or "").strip() else "obj"
+        label_text = str(values[6] or values[5] or values[7] or row_type or "element")
+        label_text = " ".join(label_text.split())
+        if len(label_text) > 72:
+            label_text = label_text[:69] + "..."
+        label = html.escape(f"{row_index + 1:02d} {row_type} - {label_text}")
         row_json = html.escape(json.dumps(values, ensure_ascii=False), quote=True)
         handles = ""
         if interactive:
@@ -392,6 +401,7 @@ def overlay_html(
 
 
 def build_ideogram_json(
+    aspect_ratio: str,
     high_level_description: str,
     style_mode: str,
     aesthetics: str,
@@ -403,23 +413,24 @@ def build_ideogram_json(
     background: str,
     rows: Any,
     bbox_order: str = "yxyx",
-    compact: bool = False,
+    compact: bool = True,
 ) -> str:
-    palette = _palette_from_text(color_palette) or []
-    style: dict[str, Any] = {
-        "aesthetics": str(aesthetics or "").strip(),
-        "lighting": str(lighting or "").strip(),
-    }
+    ratio = str(aspect_ratio or "1:1").strip()
+    if not re.fullmatch(r"\d+:\d+", ratio):
+        ratio = "1:1"
+    style_notes: list[str] = []
     if str(style_mode).lower().startswith("photo"):
-        style["photo"] = str(photo or "").strip()
-        style["medium"] = "photograph"
+        style_notes.extend(part for part in [str(photo or "").strip(), "photograph"] if part)
     else:
-        style["medium"] = str(medium or "illustration").strip() or "illustration"
-        style["art_style"] = str(art_style or "").strip()
-    style["color_palette"] = palette
+        style_notes.extend(part for part in [str(medium or "illustration").strip(), str(art_style or "").strip()] if part)
+    style_notes.extend(part for part in [str(aesthetics or "").strip(), str(lighting or "").strip(), _palette_to_text(_palette_from_text(color_palette) or [])] if part)
+    high_level = str(high_level_description or "").strip()
+    if style_notes:
+        style_text = ", ".join(dict.fromkeys(style_notes))
+        high_level = f"{high_level.rstrip('.')} in {style_text}." if high_level else style_text
     payload = {
-        "high_level_description": str(high_level_description or "").strip(),
-        "style_description": style,
+        "aspect_ratio": ratio,
+        "high_level_description": high_level,
         "compositional_deconstruction": {
             "background": str(background or "").strip(),
             "elements": rows_to_elements(rows, bbox_order=bbox_order),

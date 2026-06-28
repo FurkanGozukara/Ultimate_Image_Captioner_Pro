@@ -352,11 +352,12 @@ def _box_choices(rows: Any) -> list[str]:
         values = row + [""] * max(0, 8 - len(row))
         if not any(str(cell or "").strip() for cell in values):
             continue
-        label = str(values[5] or values[6] or values[0] or "box")
+        label = str(values[6] or values[5] or values[7] or values[0] or "box")
         label = " ".join(label.split())
         if len(label) > 58:
             label = label[:55] + "..."
-        choices.append(f"{index:02d} {values[0] or 'obj'} - {label}")
+        row_type = "text" if str(values[0] or "").strip() == "text" or str(values[7] or "").strip() else (values[0] or "obj")
+        choices.append(f"{index:02d} {row_type} - {label}")
     return choices
 
 
@@ -622,7 +623,7 @@ def build_tab(engine: Any) -> TabUI:
     def render_json_boxes(image, caption_text, preset_id_value, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         final, parsed, warnings = normalize_json_output(caption_text, preset_id=str(preset_id_value or ""))
-        rows = json_to_element_rows(parsed)
+        rows = json_to_element_rows(parsed, bbox_order=bbox_order_value)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         overlay = overlay_html(
             image,
@@ -641,11 +642,11 @@ def build_tab(engine: Any) -> TabUI:
         bbox_order_value = clean_bbox_order(bbox_order_value)
         merged_rows = _merge_visible_rows(all_rows, visible_choices, visible_rows)
         final, parsed, warnings = apply_rows_to_json(caption_text, merged_rows, bbox_order=bbox_order_value)
-        normalized_rows = json_to_element_rows(parsed)
-        choices, visible = _preserve_visible(normalized_rows, visible_choices, default_all=False)
+        display_rows = _row_data(merged_rows)
+        choices, visible = _preserve_visible(display_rows, visible_choices, default_all=False)
         overlay = overlay_html(
             image,
-            normalized_rows,
+            display_rows,
             interactive=True,
             bbox_order=bbox_order_value,
             visible_indices=_choice_indices(visible),
@@ -654,7 +655,7 @@ def build_tab(engine: Any) -> TabUI:
         status = html_message("success", "JSON box edits applied.")
         if warnings:
             status = html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + "\n".join(warnings) + "</pre>")
-        return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
+        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def apply_overlay_edit(image, caption_text, bbox_order_value, visible_choices, disable_auto_update_value, evt: gr.EventData):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -663,17 +664,17 @@ def build_tab(engine: Any) -> TabUI:
         if not isinstance(rows, list):
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         final, parsed, _warnings = apply_rows_to_json(caption_text, rows, bbox_order=bbox_order_value)
-        normalized_rows = json_to_element_rows(parsed)
-        choices, visible = _preserve_visible(normalized_rows, visible_choices, default_all=False)
+        display_rows = _row_data(rows)
+        choices, visible = _preserve_visible(display_rows, visible_choices, default_all=False)
         overlay = overlay_html(
             image,
-            normalized_rows,
+            display_rows,
             interactive=True,
             bbox_order=bbox_order_value,
             visible_indices=_choice_indices(visible),
             disable_auto_update=bool(disable_auto_update_value),
         )
-        return final, normalized_rows, _visible_df_value(normalized_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay
+        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay
 
     def add_box(all_rows, bbox_order_value, visible_choices):
         bbox_order_value = clean_bbox_order(bbox_order_value)
