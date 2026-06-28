@@ -4,6 +4,7 @@ from typing import Any
 
 import gradio as gr
 
+from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, legacy_vram_settings
 from .shared import TabUI, error_pair, run_open_folder, run_open_outputs, settings_from_values
 
@@ -23,7 +24,7 @@ ORDER = [
     "allow_tf32",
     "clear_cuda_cache",
     "low_cpu_mem_usage",
-    "use_sdpa_attention",
+    "attention_backend",
     "max_new_tokens",
     "do_sample",
     "top_k",
@@ -58,7 +59,7 @@ DEFAULTS: dict[str, Any] = {
     "allow_tf32": True,
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
-    "use_sdpa_attention": False,
+    "attention_backend": DEFAULT_JOY_ATTENTION,
     "max_new_tokens": 300,
     "do_sample": False,
     "top_k": 10,
@@ -140,7 +141,12 @@ def build_tab(engine: Any) -> TabUI:
                     components["clear_cuda_cache"] = gr.Checkbox(label="Clear CUDA cache before/after run", value=DEFAULTS["clear_cuda_cache"])
                 with gr.Row():
                     components["low_cpu_mem_usage"] = gr.Checkbox(label="Low CPU memory model loading", value=DEFAULTS["low_cpu_mem_usage"])
-                    components["use_sdpa_attention"] = gr.Checkbox(label="Use SDPA attention load hint", value=DEFAULTS["use_sdpa_attention"])
+                    components["attention_backend"] = gr.Dropdown(
+                        choices=ATTENTION_BACKEND_CHOICES,
+                        value=DEFAULTS["attention_backend"],
+                        label="Attention Backend",
+                        allow_custom_value=False,
+                    )
 
     with gr.Accordion("Universal Folder Batch", open=True):
         with gr.Row():
@@ -177,6 +183,7 @@ def build_tab(engine: Any) -> TabUI:
             settings["use_fp16"],
             settings["use_4bit"],
             settings["max_resolution"],
+            settings["attention_backend"],
             settings["batch_size"],
         )
 
@@ -193,6 +200,7 @@ def build_tab(engine: Any) -> TabUI:
             components["use_fp16"],
             components["use_4bit"],
             components["max_resolution"],
+            components["attention_backend"],
             components["batch_size"],
         ],
         queue=False,

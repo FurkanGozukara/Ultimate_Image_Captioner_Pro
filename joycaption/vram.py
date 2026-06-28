@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .attention import DEFAULT_JOY_ATTENTION, DEFAULT_QWEN_ATTENTION
+
 
 VRAM_PRESET_VALUES = [6, 8, 10, 12, 16, 24, 32]
 VRAM_PRESET_CHOICES = [f"{value} GB" for value in VRAM_PRESET_VALUES]
 VRAM_TOLERANCE_GB = 0.5
+LOW_VRAM_QWEN_ATTENTION = "sdpa_cudnn"
 
 
 @dataclass(frozen=True)
@@ -90,25 +93,25 @@ def gpu_summary_html() -> str:
 def legacy_vram_settings(label: str | int | None) -> dict[str, Any]:
     value = preset_value(label)
     if value <= 8:
-        return {"use_4bit": True, "use_fp16": True, "max_resolution": 768, "batch_size": 1}
+        return {"use_4bit": True, "use_fp16": True, "max_resolution": 768, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 12:
-        return {"use_4bit": True, "use_fp16": False, "max_resolution": 1024, "batch_size": 1}
+        return {"use_4bit": True, "use_fp16": False, "max_resolution": 1024, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 16:
-        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1280, "batch_size": 1}
+        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1280, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 24:
-        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1536, "batch_size": 2}
-    return {"use_4bit": False, "use_fp16": False, "max_resolution": 1536, "batch_size": 4}
+        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1536, "batch_size": 2, "attention_backend": DEFAULT_JOY_ATTENTION}
+    return {"use_4bit": False, "use_fp16": False, "max_resolution": 1536, "batch_size": 4, "attention_backend": DEFAULT_JOY_ATTENTION}
 
 
 def beta_vram_settings(label: str | int | None) -> dict[str, Any]:
     value = preset_value(label)
     if value <= 10:
-        return {"model_quantization": "nf4", "downscale_max_res": "768", "zip_batch_size": 1, "folder_batch_size": 1}
+        return {"model_quantization": "nf4", "downscale_max_res": "768", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 16:
-        return {"model_quantization": "int8", "downscale_max_res": "1024", "zip_batch_size": 2, "folder_batch_size": 2}
+        return {"model_quantization": "int8", "downscale_max_res": "1024", "zip_batch_size": 2, "folder_batch_size": 2, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 24:
-        return {"model_quantization": "bf16", "downscale_max_res": "1536", "zip_batch_size": 4, "folder_batch_size": 4}
-    return {"model_quantization": "bf16", "downscale_max_res": "2048", "zip_batch_size": 6, "folder_batch_size": 6}
+        return {"model_quantization": "bf16", "downscale_max_res": "1536", "zip_batch_size": 4, "folder_batch_size": 4, "attention_backend": DEFAULT_JOY_ATTENTION}
+    return {"model_quantization": "bf16", "downscale_max_res": "2048", "zip_batch_size": 6, "folder_batch_size": 6, "attention_backend": DEFAULT_JOY_ATTENTION}
 
 
 def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
@@ -117,6 +120,7 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
         return {
             "model_quantization": "nf4",
             "image_long_edge": 512,
+            "attention_backend": LOW_VRAM_QWEN_ATTENTION,
             "file_batch_size": 1,
             "folder_batch_size": 1,
             "max_new_tokens": 2048,
@@ -125,6 +129,7 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
         return {
             "model_quantization": "nf4",
             "image_long_edge": 768,
+            "attention_backend": LOW_VRAM_QWEN_ATTENTION,
             "file_batch_size": 1,
             "folder_batch_size": 1,
             "max_new_tokens": 3072,
@@ -133,6 +138,7 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
         return {
             "model_quantization": "int8",
             "image_long_edge": 768,
+            "attention_backend": DEFAULT_QWEN_ATTENTION,
             "file_batch_size": 1,
             "folder_batch_size": 1,
             "max_new_tokens": 4096,
@@ -141,6 +147,7 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
         return {
             "model_quantization": "bf16",
             "image_long_edge": 1024,
+            "attention_backend": DEFAULT_QWEN_ATTENTION,
             "file_batch_size": 2,
             "folder_batch_size": 2,
             "max_new_tokens": 4096,
@@ -148,6 +155,7 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
     return {
         "model_quantization": "bf16",
         "image_long_edge": 1280,
+        "attention_backend": DEFAULT_QWEN_ATTENTION,
         "file_batch_size": 4,
         "folder_batch_size": 4,
         "max_new_tokens": 6144,

@@ -152,6 +152,13 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   line-height: 1.45 !important;
 }
 
+.jc-output textarea {
+  max-height: 560px !important;
+  overflow: auto !important;
+  resize: vertical !important;
+  white-space: pre !important;
+}
+
 .jc-qwen-workspace {
   min-width: 0;
 }

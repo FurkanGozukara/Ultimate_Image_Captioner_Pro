@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 
 GLOBAL_ORDER = ["theme_mode"]
 GLOBAL_DEFAULTS = {"theme_mode": "dark"}
+FAVICON_PATH = BASE_DIR / "assets" / "favicon.svg"
 
 
 def build_theme() -> gr.Theme:
@@ -78,7 +79,7 @@ def build_app() -> gr.Blocks:
                     gr.HTML(
                         """
                         <h1>Ultimate Image Captioner Pro</h1>
-                        <p>Unified Pre-Alpha, Alpha, and Beta captioning workspace.</p>
+                        <p>Unified Qwen3 VL, Ideogram JSON, Pre-Alpha, Alpha, and Beta captioning workspace.</p>
                         """
                     )
                     with gr.Column(elem_classes=["jc-header-status"]):
@@ -162,7 +163,18 @@ def build_app() -> gr.Blocks:
                 return gr.update(), html_message("error", f"Could not delete preset '{selected_name}'.")
 
             def load_startup_preset():
-                return gr.update(choices=preset_store.list_presets(), value=None), html_message("info", "No preset selected.")
+                selected_name, payload = preset_store.load_last_used()
+                if selected_name and payload:
+                    return [
+                        *_flat_values_from_payload(tabs, payload),
+                        gr.update(choices=preset_store.list_presets(), value=selected_name),
+                        html_message("success", f"Loaded last used preset '{selected_name}'."),
+                    ]
+                return [
+                    *_flat_values_from_payload(tabs, _default_payload(tabs)),
+                    gr.update(choices=preset_store.list_presets(), value=None),
+                    html_message("info", "No preset selected."),
+                ]
 
             save_preset_btn.click(
                 save_preset,
@@ -207,7 +219,7 @@ def build_app() -> gr.Blocks:
                 }
                 """,
             )
-            demo.load(load_startup_preset, outputs=[preset_dropdown, preset_status], queue=False)
+            demo.load(load_startup_preset, outputs=flat_inputs + [preset_dropdown, preset_status], queue=False)
 
     demo.queue(default_concurrency_limit=1)
     return demo
@@ -235,6 +247,7 @@ def main() -> None:
         "share": args.share,
         "inbrowser": args.inbrowser,
         "allowed_paths": allowed_paths,
+        "favicon_path": FAVICON_PATH if FAVICON_PATH.exists() else None,
         "css": CUSTOM_CSS,
         "quiet": True,
     }

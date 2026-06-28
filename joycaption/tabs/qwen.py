@@ -4,6 +4,7 @@ from typing import Any
 
 import gradio as gr
 
+from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_QWEN_ATTENTION
 from ..common import IMAGE_EXTENSIONS, html_message
 from ..json_tools import (
     EMPTY_ELEMENT_ROW,
@@ -62,7 +63,7 @@ ORDER = [
     "allow_tf32",
     "clear_cuda_cache",
     "low_cpu_mem_usage",
-    "use_sdpa_attention",
+    "attention_backend",
     "compact_json",
     "json_retries",
     "remove_newlines",
@@ -113,7 +114,7 @@ DEFAULTS: dict[str, Any] = {
     "allow_tf32": True,
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
-    "use_sdpa_attention": False,
+    "attention_backend": DEFAULT_VRAM_SETTINGS.get("attention_backend", DEFAULT_QWEN_ATTENTION),
     "compact_json": False,
     "json_retries": 1,
     "remove_newlines": False,
@@ -521,7 +522,12 @@ def build_tab(engine: Any) -> TabUI:
                     components["clear_cuda_cache"] = gr.Checkbox(label="Clear CUDA cache", value=DEFAULTS["clear_cuda_cache"])
                 with gr.Row():
                     components["low_cpu_mem_usage"] = gr.Checkbox(label="Low CPU memory loading", value=DEFAULTS["low_cpu_mem_usage"])
-                    components["use_sdpa_attention"] = gr.Checkbox(label="Use SDPA attention", value=DEFAULTS["use_sdpa_attention"])
+                    components["attention_backend"] = gr.Dropdown(
+                        choices=ATTENTION_BACKEND_CHOICES,
+                        value=DEFAULTS["attention_backend"],
+                        label="Attention Backend",
+                        allow_custom_value=False,
+                    )
                 with gr.Row():
                     components["compact_json"] = gr.Checkbox(label="Compact JSON", value=DEFAULTS["compact_json"])
                     components["json_retries"] = gr.Slider(0, 3, value=DEFAULTS["json_retries"], step=1, label="JSON Repair Retries")
@@ -603,6 +609,7 @@ def build_tab(engine: Any) -> TabUI:
         return (
             settings["model_quantization"],
             settings["image_long_edge"],
+            settings["attention_backend"],
             settings["file_batch_size"],
             settings["folder_batch_size"],
             settings["max_new_tokens"],
@@ -776,6 +783,7 @@ def build_tab(engine: Any) -> TabUI:
         outputs=[
             components["model_quantization"],
             components["image_long_edge"],
+            components["attention_backend"],
             components["file_batch_size"],
             components["folder_batch_size"],
             components["max_new_tokens"],

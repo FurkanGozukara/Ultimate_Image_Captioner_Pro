@@ -157,7 +157,7 @@ class LazyBetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str, str], None, None]:
         if not use_subprocess:
@@ -175,7 +175,7 @@ class LazyBetaEngine:
                 allow_tf32,
                 clear_cuda_cache,
                 low_cpu_mem_usage,
-                use_sdpa_attention,
+                attention_backend,
                 use_liger_kernel,
             )
             return
@@ -184,7 +184,7 @@ class LazyBetaEngine:
             "allow_tf32": allow_tf32,
             "clear_cuda_cache": clear_cuda_cache,
             "low_cpu_mem_usage": low_cpu_mem_usage,
-            "use_sdpa_attention": use_sdpa_attention,
+            "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
         }
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
@@ -239,7 +239,7 @@ class LazyBetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         if not use_subprocess:
@@ -261,7 +261,7 @@ class LazyBetaEngine:
                 allow_tf32,
                 clear_cuda_cache,
                 low_cpu_mem_usage,
-                use_sdpa_attention,
+                attention_backend,
                 use_liger_kernel,
             )
             return
@@ -290,7 +290,7 @@ class LazyBetaEngine:
                         "allow_tf32": allow_tf32,
                         "clear_cuda_cache": clear_cuda_cache,
                         "low_cpu_mem_usage": low_cpu_mem_usage,
-                        "use_sdpa_attention": use_sdpa_attention,
+                        "attention_backend": attention_backend,
                         "use_liger_kernel": use_liger_kernel,
                     },
                 },
@@ -330,7 +330,7 @@ class LazyBetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str], None, None]:
         if not use_subprocess:
@@ -363,7 +363,7 @@ class LazyBetaEngine:
                 allow_tf32,
                 clear_cuda_cache,
                 low_cpu_mem_usage,
-                use_sdpa_attention,
+                attention_backend,
                 use_liger_kernel,
             )
             return
@@ -400,7 +400,7 @@ class LazyBetaEngine:
                         "allow_tf32": allow_tf32,
                         "clear_cuda_cache": clear_cuda_cache,
                         "low_cpu_mem_usage": low_cpu_mem_usage,
-                        "use_sdpa_attention": use_sdpa_attention,
+                        "attention_backend": attention_backend,
                         "use_liger_kernel": use_liger_kernel,
                     },
                 },

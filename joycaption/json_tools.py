@@ -119,7 +119,7 @@ def normalize_json_output(text: str, preset_id: str = "", compact: bool = False)
     if preset_id.startswith(("i4_official_v1", "i4_json_")):
         parsed = coerce_official_v1_payload(parsed, rows=None)
         warnings.extend(validate_official_v1_json(parsed))
-    normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if (compact or preset_id.startswith(("i4_official_v1", "i4_json_"))) else json.dumps(parsed, ensure_ascii=False, indent=2)
+    normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(parsed, ensure_ascii=False, indent=2)
     return normalized, parsed, warnings
 
 
@@ -281,7 +281,7 @@ def coerce_official_v1_payload(data: dict[str, Any] | None, rows: Any = None, bb
 def apply_rows_to_json(json_text: str, rows: Any, bbox_order: str = "yxyx") -> tuple[str, dict[str, Any] | None, list[str]]:
     data, _pretty, warnings = parse_json_caption(json_text)
     data = coerce_official_v1_payload(data, rows=rows, bbox_order=bbox_order)
-    normalized = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    normalized = json.dumps(data, ensure_ascii=False, indent=2)
     return normalized, data, warnings
 
 

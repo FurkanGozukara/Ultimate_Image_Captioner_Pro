@@ -5,6 +5,7 @@ from typing import Any
 
 import gradio as gr
 
+from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..common import NAME_OPTION, get_all_extra_options, html_message, save_custom_extra_option
 from ..prompt_options import BETA_CAPTION_TYPE_MAP as CAPTION_TYPE_MAP
 from ..vram import VRAM_PRESET_CHOICES, beta_vram_settings, default_vram_preset
@@ -20,7 +21,7 @@ ORDER = [
     "allow_tf32",
     "clear_cuda_cache",
     "low_cpu_mem_usage",
-    "use_sdpa_attention",
+    "attention_backend",
     "use_liger_kernel",
     "device_id",
     "caption_type",
@@ -58,7 +59,7 @@ DEFAULTS: dict[str, Any] = {
     "allow_tf32": True,
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
-    "use_sdpa_attention": False,
+    "attention_backend": DEFAULT_JOY_ATTENTION,
     "use_liger_kernel": True,
     "device_id": "0",
     "caption_type": "Descriptive",
@@ -195,7 +196,12 @@ def build_tab(engine: Any) -> TabUI:
                     components["clear_cuda_cache"] = gr.Checkbox(label="Clear CUDA cache before/after run", value=DEFAULTS["clear_cuda_cache"])
                 with gr.Row():
                     components["low_cpu_mem_usage"] = gr.Checkbox(label="Low CPU memory model loading", value=DEFAULTS["low_cpu_mem_usage"])
-                    components["use_sdpa_attention"] = gr.Checkbox(label="Use SDPA attention load hint", value=DEFAULTS["use_sdpa_attention"])
+                    components["attention_backend"] = gr.Dropdown(
+                        choices=ATTENTION_BACKEND_CHOICES,
+                        value=DEFAULTS["attention_backend"],
+                        label="Attention Backend",
+                        allow_custom_value=False,
+                    )
                 components["use_liger_kernel"] = gr.Checkbox(label="Apply Liger kernel when available", value=DEFAULTS["use_liger_kernel"])
         with gr.Column(scale=2):
             with gr.Accordion("Prompt", open=True):
@@ -251,6 +257,7 @@ def build_tab(engine: Any) -> TabUI:
         return (
             settings["model_quantization"],
             settings["downscale_max_res"],
+            settings["attention_backend"],
             settings["zip_batch_size"],
             settings["folder_batch_size"],
         )
@@ -274,6 +281,7 @@ def build_tab(engine: Any) -> TabUI:
         outputs=[
             components["model_quantization"],
             components["downscale_max_res"],
+            components["attention_backend"],
             components["zip_batch_size"],
             components["folder_batch_size"],
         ],
@@ -296,7 +304,7 @@ def build_tab(engine: Any) -> TabUI:
             components["allow_tf32"],
             components["clear_cuda_cache"],
             components["low_cpu_mem_usage"],
-            components["use_sdpa_attention"],
+            components["attention_backend"],
             components["use_liger_kernel"],
         ],
         outputs=[single_status, output_caption, global_error],
@@ -324,7 +332,7 @@ def build_tab(engine: Any) -> TabUI:
             components["allow_tf32"],
             components["clear_cuda_cache"],
             components["low_cpu_mem_usage"],
-            components["use_sdpa_attention"],
+            components["attention_backend"],
             components["use_liger_kernel"],
         ],
         outputs=[batch_status, zip_output, global_error],
@@ -363,7 +371,7 @@ def build_tab(engine: Any) -> TabUI:
             components["allow_tf32"],
             components["clear_cuda_cache"],
             components["low_cpu_mem_usage"],
-            components["use_sdpa_attention"],
+            components["attention_backend"],
             components["use_liger_kernel"],
         ],
         outputs=[folder_status, global_error],

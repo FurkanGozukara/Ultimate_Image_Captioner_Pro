@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover - optional import
     apply_liger_kernel_to_llama = None  # type: ignore[assignment]
     LIGER_AVAILABLE = False
 
+from ..attention import attention_load_kwargs, attention_runtime_context, normalize_attention_backend
 from ..common import (
     BatchStopFlag,
     IMAGE_EXTENSIONS,
@@ -129,7 +130,8 @@ class BetaModelState:
     models: dict[int | str, LlavaForConditionalGeneration] | None = None
     quant: str | None = None
     devices: list[int | str] | None = None
-    optimization_key: tuple[bool, bool, bool] | None = None
+    optimization_key: tuple[bool, str, bool] | None = None
+    attention_settings: dict[str, Any] | None = None
 
 
 def _token_id(value: Any) -> int | None:
@@ -173,6 +175,7 @@ class BetaEngine:
             self.state.quant = None
             self.state.devices = None
             self.state.optimization_key = None
+            self.state.attention_settings = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -247,7 +250,7 @@ class BetaEngine:
             devices = parse_device_ids(device_id_str, allow_cpu=True)
             optimization_key = (
                 bool(optimizations.get("low_cpu_mem_usage", False)),
-                bool(optimizations.get("use_sdpa_attention", False)),
+                normalize_attention_backend(optimizations),
                 bool(optimizations.get("use_liger_kernel", True)),
             )
             if (
@@ -277,8 +280,7 @@ class BetaEngine:
                 load_kwargs: dict[str, Any] = {}
                 if optimizations.get("low_cpu_mem_usage", False):
                     load_kwargs["low_cpu_mem_usage"] = True
-                if optimizations.get("use_sdpa_attention", False):
-                    load_kwargs["attn_implementation"] = "sdpa"
+                load_kwargs.update(attention_load_kwargs(optimizations, quant=quant))
                 log_event(f"Loading model on {device_map} with quant={quant}.", "Joy Caption Beta 1")
                 if quant == "bf16":
                     model = LlavaForConditionalGeneration.from_pretrained(
@@ -317,6 +319,7 @@ class BetaEngine:
             self.state.quant = quant
             self.state.devices = devices
             self.state.optimization_key = optimization_key
+            self.state.attention_settings = dict(optimizations)
             log_event(f"Model load complete on {', '.join(str(d) for d in devices)}.", "Joy Caption Beta 1")
             return f"Model ready on {', '.join(str(d) for d in devices)}."
 
@@ -360,7 +363,8 @@ class BetaEngine:
             generation_kwargs["temperature"] = max(float(temperature), 1e-5)
             generation_kwargs["top_p"] = float(top_p)
         log_event(f"Generating caption | do_sample={do_sample}.", "Joy Caption Beta 1")
-        generate_ids = model.generate(**generation_kwargs)
+        with attention_runtime_context(self.state.attention_settings or {}):
+            generate_ids = model.generate(**generation_kwargs)
         preds = generate_ids[:, inputs["input_ids"].shape[1] :]
         caption = processor.tokenizer.decode(preds[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
         log_event("Generation complete.", "Joy Caption Beta 1")
@@ -381,7 +385,7 @@ class BetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str, str], None, None]:
         log_event("Single image caption requested.", "Joy Caption Beta 1")
@@ -389,7 +393,7 @@ class BetaEngine:
             "allow_tf32": allow_tf32,
             "clear_cuda_cache": clear_cuda_cache,
             "low_cpu_mem_usage": low_cpu_mem_usage,
-            "use_sdpa_attention": use_sdpa_attention,
+            "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
         }
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
@@ -523,7 +527,7 @@ class BetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         log_event("Files-to-ZIP batch requested.", "Joy Caption Beta 1")
@@ -531,7 +535,7 @@ class BetaEngine:
             "allow_tf32": allow_tf32,
             "clear_cuda_cache": clear_cuda_cache,
             "low_cpu_mem_usage": low_cpu_mem_usage,
-            "use_sdpa_attention": use_sdpa_attention,
+            "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
         }
         if not files_list:
@@ -639,7 +643,7 @@ class BetaEngine:
         allow_tf32: bool = True,
         clear_cuda_cache: bool = True,
         low_cpu_mem_usage: bool = True,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str], None, None]:
         log_event("Folder batch requested.", "Joy Caption Beta 1")
@@ -647,7 +651,7 @@ class BetaEngine:
             "allow_tf32": allow_tf32,
             "clear_cuda_cache": clear_cuda_cache,
             "low_cpu_mem_usage": low_cpu_mem_usage,
-            "use_sdpa_attention": use_sdpa_attention,
+            "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
         }
         if use_subprocess:

@@ -14,7 +14,7 @@ from typing import Any, Generator, Sequence
 import torch
 from PIL import Image
 from PIL import ImageOps
-from transformers import AutoProcessor, BitsAndBytesConfig
+from transformers import AutoProcessor, BitsAndBytesConfig, StoppingCriteria, StoppingCriteriaList
 from transformers.utils import logging as hf_logging
 
 try:
@@ -27,6 +27,7 @@ else:
 
 hf_logging.disable_progress_bar()
 
+from ..attention import attention_load_kwargs, attention_runtime_context, normalize_attention_backend
 from ..common import (
     BatchStopFlag,
     IMAGE_EXTENSIONS,
@@ -61,7 +62,7 @@ class QwenModelState:
     model: Any | None = None
     quant: str | None = None
     device_id: int | str | None = None
-    optimization_key: tuple[bool, bool] | None = None
+    optimization_key: tuple[bool, str] | None = None
 
 
 def _resolve_device(device_id: int | str) -> str:
@@ -186,6 +187,37 @@ def _apply_detected_aspect_ratio(
     return ordered, filtered_warnings
 
 
+class ConsoleProgressStoppingCriteria(StoppingCriteria):
+    def __init__(self, label: str, prompt_tokens: int, max_new_tokens: int) -> None:
+        self.label = label
+        self.prompt_tokens = max(0, int(prompt_tokens))
+        self.max_new_tokens = max(1, int(max_new_tokens))
+        self.last_percent = -1
+        self._write(0, 0)
+
+    def _write(self, generated: int, percent: int) -> None:
+        print(
+            f"\r{self.label}: token generation {percent:3d}% ({generated}/{self.max_new_tokens})",
+            end="",
+            flush=True,
+        )
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs: Any) -> bool:
+        generated = max(0, int(input_ids.shape[-1]) - self.prompt_tokens)
+        percent = min(99, int((generated / self.max_new_tokens) * 100))
+        if percent != self.last_percent:
+            self.last_percent = percent
+            self._write(generated, percent)
+        return False
+
+    def finish(self, generated: int | None = None, failed: bool = False) -> None:
+        if failed:
+            print("", flush=True)
+            return
+        self._write(self.max_new_tokens if generated is None else generated, 100)
+        print("", flush=True)
+
+
 class QwenEngine:
     def __init__(self, model_path: Path):
         self.model_path = Path(model_path)
@@ -238,7 +270,7 @@ class QwenEngine:
         device_id = parse_device_ids(settings.get("device_id") or "0", allow_cpu=True)[0]
         optimization_key = (
             bool(settings.get("low_cpu_mem_usage", True)),
-            bool(settings.get("use_sdpa_attention", False)),
+            normalize_attention_backend(settings),
         )
         if (
             self.state.model is not None
@@ -263,8 +295,7 @@ class QwenEngine:
         }
         if settings.get("low_cpu_mem_usage", True):
             load_kwargs["low_cpu_mem_usage"] = True
-        if settings.get("use_sdpa_attention", False):
-            load_kwargs["attn_implementation"] = "sdpa"
+        load_kwargs.update(attention_load_kwargs(settings, quant=quant))
         qconfig = self._quant_config(quant)
         if qconfig is not None:
             load_kwargs["quantization_config"] = qconfig
@@ -316,9 +347,10 @@ class QwenEngine:
         inputs = inputs.to(model.device)
         temperature = float(settings.get("temperature", 0.1) or 0.0)
         do_sample = temperature > 0
+        max_new_tokens = int(settings.get("max_new_tokens", 512) or 512)
         generation_kwargs: dict[str, Any] = {
             **inputs,
-            "max_new_tokens": int(settings.get("max_new_tokens", 512) or 512),
+            "max_new_tokens": max_new_tokens,
             "do_sample": do_sample,
             "repetition_penalty": float(settings.get("repetition_penalty", 1.0) or 1.0),
         }
@@ -327,7 +359,19 @@ class QwenEngine:
             generation_kwargs["top_p"] = float(settings.get("top_p", 0.9) or 0.9)
             generation_kwargs["top_k"] = int(settings.get("top_k", 20) or 20)
         log_event(f"Generating Qwen caption | do_sample={do_sample}.", SCOPE)
-        generated_ids = model.generate(**generation_kwargs)
+        progress = None
+        if bool(settings.get("console_progress", True)):
+            progress = ConsoleProgressStoppingCriteria(SCOPE, int(inputs.input_ids.shape[-1]), max_new_tokens)
+            generation_kwargs["stopping_criteria"] = StoppingCriteriaList([progress])
+        try:
+            with attention_runtime_context(settings):
+                generated_ids = model.generate(**generation_kwargs)
+        except Exception:
+            if progress is not None:
+                progress.finish(failed=True)
+            raise
+        if progress is not None:
+            progress.finish(max(0, int(generated_ids.shape[-1]) - int(inputs.input_ids.shape[-1])))
         trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
         output_text = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
         return str(output_text[0] if output_text else "").strip()
@@ -368,7 +412,7 @@ class QwenEngine:
             if parsed is not None:
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-                    if bool(settings.get("compact_json", False)) or str(settings.get("preset_id") or "").startswith(("i4_official_v1", "i4_json_"))
+                    if bool(settings.get("compact_json", False))
                     else json.dumps(parsed, ensure_ascii=False, indent=2)
                 )
             return final, parsed, warnings

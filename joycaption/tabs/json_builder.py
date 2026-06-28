@@ -406,7 +406,7 @@ def build_tab() -> TabUI:
                     import_btn = gr.Button("Import JSON Rows", elem_classes=["btn-load-preset"])
                 json_output = gr.Textbox(
                     label="Generated Ideogram JSON",
-                    lines=10,
+                    lines=18,
                     interactive=True,
                     elem_classes=["jc-output", "jc-codeish"],
                 )
@@ -471,6 +471,7 @@ def build_tab() -> TabUI:
             background_value,
             rows,
             bbox_order=clean_bbox_order(bbox_order_value),
+            compact=False,
         )
 
     def generate_json(

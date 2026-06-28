@@ -141,7 +141,7 @@ def beta_zip(payload: dict[str, Any]) -> dict[str, Any]:
         bool(settings.get("allow_tf32", True)),
         bool(settings.get("clear_cuda_cache", True)),
         bool(settings.get("low_cpu_mem_usage", True)),
-        bool(settings.get("use_sdpa_attention", False)),
+        str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         bool(settings.get("use_liger_kernel", True)),
     ):
         last_status = status
@@ -187,7 +187,7 @@ def beta_folder(payload: dict[str, Any]) -> dict[str, Any]:
         bool(settings.get("allow_tf32", True)),
         bool(settings.get("clear_cuda_cache", True)),
         bool(settings.get("low_cpu_mem_usage", True)),
-        bool(settings.get("use_sdpa_attention", False)),
+        str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         bool(settings.get("use_liger_kernel", True)),
     ):
         last_status = status

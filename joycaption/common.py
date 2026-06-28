@@ -495,6 +495,12 @@ def optimization_status_text(settings: dict[str, Any]) -> str:
         labels.append("SDPA attention")
     if settings.get("use_liger_kernel", False):
         labels.append("Liger kernel")
+    try:
+        from .attention import attention_status_text
+
+        labels.append(attention_status_text(settings))
+    except Exception:
+        pass
     return "Optimizations: " + (", ".join(labels) if labels else "none")
 
 

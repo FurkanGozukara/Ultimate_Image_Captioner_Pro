@@ -32,6 +32,7 @@ try:
 except Exception:  # pragma: no cover - optional at import time
     PeftModel = None  # type: ignore[assignment]
 
+from ..attention import attention_load_kwargs, attention_runtime_context, normalize_attention_backend
 from ..common import (
     BatchStopFlag,
     CaptionResult,
@@ -341,7 +342,7 @@ class LegacySiglipEngine:
         dtype: torch.dtype,
         use_4bit: bool,
         low_cpu_mem_usage: bool = False,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
     ) -> Any:
         text_dir = self.config.checkpoint_dir / "text_model"
         log_event(f"Loading text model for {self.config.title}: source={text_dir}", self.config.title)
@@ -352,8 +353,8 @@ class LegacySiglipEngine:
         }
         if low_cpu_mem_usage:
             kwargs["low_cpu_mem_usage"] = True
-        if use_sdpa_attention:
-            kwargs["attn_implementation"] = "sdpa"
+        quant_name = "nf4" if use_4bit else ("fp16" if dtype == torch.float16 else "bf16")
+        kwargs.update(attention_load_kwargs({"attention_backend": attention_backend}, quant=quant_name))
         if quantization_config is not None:
             kwargs["quantization_config"] = quantization_config
 
@@ -412,10 +413,11 @@ class LegacySiglipEngine:
         use_fp16: bool = False,
         use_4bit: bool = False,
         low_cpu_mem_usage: bool = False,
-        use_sdpa_attention: bool = False,
+        attention_backend: str = "sdpa",
     ) -> LegacyModelBundle:
         device = _resolve_device(device_id)
-        key = (device, bool(use_fp16), bool(use_4bit), bool(low_cpu_mem_usage), bool(use_sdpa_attention))
+        backend = normalize_attention_backend(attention_backend)
+        key = (device, bool(use_fp16), bool(use_4bit), bool(low_cpu_mem_usage), backend)
         with self._bundle_lock:
             if key in self._bundles:
                 log_event(f"Using cached model bundle on {device}.", self.config.title)
@@ -436,7 +438,7 @@ class LegacySiglipEngine:
             tokenizer = AutoTokenizer.from_pretrained(self._tokenizer_source(), use_fast=False)
             if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
                 tokenizer.pad_token = tokenizer.eos_token
-            text_model = self._load_text_model(device, dtype, use_4bit, low_cpu_mem_usage, use_sdpa_attention)
+            text_model = self._load_text_model(device, dtype, use_4bit, low_cpu_mem_usage, backend)
             _normalize_generation_config(text_model, tokenizer)
             clip_model = self._load_clip_model(device)
             image_adapter = self._load_image_adapter(clip_model, text_model, device)
@@ -546,12 +548,13 @@ class LegacySiglipEngine:
             generation_kwargs["top_k"] = int(settings.get("top_k", 10))
             generation_kwargs["temperature"] = max(float(settings.get("temperature", 0.5)), 1e-5)
         log_event(f"Pre-Alpha: generating caption (max_new_tokens={generation_kwargs['max_new_tokens']}).", self.config.title)
-        generate_ids = bundle.text_model.generate(
-            input_ids,
-            inputs_embeds=inputs_embeds,
-            attention_mask=torch.ones_like(input_ids),
-            **generation_kwargs,
-        )
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                **generation_kwargs,
+            )
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.numel() and generate_ids[0][-1] == bundle.tokenizer.eos_token_id:
             generate_ids = generate_ids[:, :-1]
@@ -601,15 +604,16 @@ class LegacySiglipEngine:
             dim=1,
         )
         log_event(f"Alpha 1: generating caption (max_new_tokens={int(settings.get('max_new_tokens', 300))}).", self.config.title)
-        generate_ids = bundle.text_model.generate(
-            input_ids,
-            inputs_embeds=inputs_embeds,
-            attention_mask=torch.ones_like(input_ids),
-            max_new_tokens=int(settings.get("max_new_tokens", 300)),
-            do_sample=True,
-            suppress_tokens=None,
-            **_pad_generation_kwargs(bundle.tokenizer),
-        )
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                max_new_tokens=int(settings.get("max_new_tokens", 300)),
+                do_sample=True,
+                suppress_tokens=None,
+                **_pad_generation_kwargs(bundle.tokenizer),
+            )
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.shape[1] > 0:
             generate_ids = generate_ids[:, :-1]
@@ -666,15 +670,16 @@ class LegacySiglipEngine:
             dim=1,
         )
         log_event(f"Alpha 2: generating caption (max_new_tokens={int(settings.get('max_new_tokens', 300))}).", self.config.title)
-        generate_ids = bundle.text_model.generate(
-            input_ids,
-            inputs_embeds=input_embeds,
-            attention_mask=torch.ones_like(input_ids),
-            max_new_tokens=int(settings.get("max_new_tokens", 300)),
-            do_sample=True,
-            suppress_tokens=None,
-            **_pad_generation_kwargs(bundle.tokenizer),
-        )
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=input_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                max_new_tokens=int(settings.get("max_new_tokens", 300)),
+                do_sample=True,
+                suppress_tokens=None,
+                **_pad_generation_kwargs(bundle.tokenizer),
+            )
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.shape[1] > 0:
             last = generate_ids[0][-1]
@@ -703,7 +708,7 @@ class LegacySiglipEngine:
             use_fp16=bool(settings.get("use_fp16", False)),
             use_4bit=bool(settings.get("use_4bit", settings.get("use_4bit_quantization", False))),
             low_cpu_mem_usage=bool(settings.get("low_cpu_mem_usage", False)),
-            use_sdpa_attention=bool(settings.get("use_sdpa_attention", False)),
+            attention_backend=str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         )
         if self.config.mode == "pre_alpha":
             result = self._generate_pre_alpha(image, settings, bundle)
