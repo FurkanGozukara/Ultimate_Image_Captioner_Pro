@@ -65,6 +65,27 @@ class QwenModelState:
     optimization_key: tuple[bool, str] | None = None
 
 
+@dataclass
+class QwenGenerationStats:
+    generated_tokens: int = 0
+    elapsed_seconds: float = 0.0
+    tokens_per_second: float = 0.0
+
+
+def _generation_stats_text(stats: QwenGenerationStats) -> str:
+    return (
+        f"{stats.generated_tokens} token(s) in {stats.elapsed_seconds:.2f}s "
+        f"({stats.tokens_per_second:.2f} tok/s)"
+    )
+
+
+def _synchronize_if_cuda(device: Any) -> None:
+    if not torch.cuda.is_available():
+        return
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize(device)
+
+
 def _resolve_device(device_id: int | str) -> str:
     if str(device_id).lower() == "cpu":
         return "cpu"
@@ -193,11 +214,15 @@ class ConsoleProgressStoppingCriteria(StoppingCriteria):
         self.prompt_tokens = max(0, int(prompt_tokens))
         self.max_new_tokens = max(1, int(max_new_tokens))
         self.last_percent = -1
+        self.started = time.time()
         self._write(0, 0)
 
     def _write(self, generated: int, percent: int) -> None:
+        elapsed = max(time.time() - self.started, 1e-9)
+        tokens_per_second = max(0, int(generated)) / elapsed
         print(
-            f"\r{self.label}: token generation {percent:3d}% ({generated}/{self.max_new_tokens})",
+            f"\r{self.label}: token generation {percent:3d}% "
+            f"({generated}/{self.max_new_tokens}, {tokens_per_second:.2f} tok/s)",
             end="",
             flush=True,
         )
@@ -223,6 +248,7 @@ class QwenEngine:
         self.model_path = Path(model_path)
         self.state = QwenModelState()
         self.stop_flag = BatchStopFlag()
+        self.last_generation_stats = QwenGenerationStats()
 
     def clear_models(self) -> None:
         if self.state.model is not None:
@@ -356,13 +382,15 @@ class QwenEngine:
         }
         if do_sample:
             generation_kwargs["temperature"] = max(temperature, 1e-5)
-            generation_kwargs["top_p"] = float(settings.get("top_p", 0.9) or 0.9)
+            generation_kwargs["top_p"] = float(settings.get("top_p", 0.8) or 0.8)
             generation_kwargs["top_k"] = int(settings.get("top_k", 20) or 20)
         log_event(f"Generating Qwen caption | do_sample={do_sample}.", SCOPE)
         progress = None
         if bool(settings.get("console_progress", True)):
             progress = ConsoleProgressStoppingCriteria(SCOPE, int(inputs.input_ids.shape[-1]), max_new_tokens)
             generation_kwargs["stopping_criteria"] = StoppingCriteriaList([progress])
+        _synchronize_if_cuda(model.device)
+        generation_started = time.time()
         try:
             with attention_runtime_context(settings):
                 generated_ids = model.generate(**generation_kwargs)
@@ -370,8 +398,17 @@ class QwenEngine:
             if progress is not None:
                 progress.finish(failed=True)
             raise
+        _synchronize_if_cuda(model.device)
+        generated_token_count = max(0, int(generated_ids.shape[-1]) - int(inputs.input_ids.shape[-1]))
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
+        self.last_generation_stats = QwenGenerationStats(
+            generated_tokens=generated_token_count,
+            elapsed_seconds=generation_elapsed,
+            tokens_per_second=generated_token_count / generation_elapsed,
+        )
         if progress is not None:
-            progress.finish(max(0, int(generated_ids.shape[-1]) - int(inputs.input_ids.shape[-1])))
+            progress.finish(generated_token_count)
+        log_event(f"Qwen generation speed: {_generation_stats_text(self.last_generation_stats)}.", SCOPE)
         trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
         output_text = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
         return str(output_text[0] if output_text else "").strip()
@@ -440,6 +477,7 @@ class QwenEngine:
             image_settings = _settings_for_image(settings, image_path, image)
             raw_caption = self.generate_caption(image, image_settings)
             final_caption, parsed_json, warnings = self._finalize_output(image, raw_caption, image_settings)
+            generation_stats = self.last_generation_stats
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
             metadata = {
@@ -456,6 +494,9 @@ class QwenEngine:
                 "json_warnings": warnings,
                 "settings": dict(image_settings),
                 "elapsed_seconds": time.time() - start,
+                "generated_tokens": generation_stats.generated_tokens,
+                "generation_elapsed_seconds": generation_stats.elapsed_seconds,
+                "tokens_per_second": generation_stats.tokens_per_second,
                 "vram_before": before_vram,
                 "vram_after": after_vram,
                 "optimizations": optimization_status_text(settings),
@@ -478,6 +519,7 @@ class QwenEngine:
                 f"Caption saved to: {caption_path}<br>"
                 f"Image output: {output_image_path if output_image_path else 'Image copy disabled.'}<br>"
                 f"Metadata saved to: {metadata_path}<br>"
+                f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>{warning_html}"
             )
             yield html_message("success", f"Qwen generation complete.<br>{detail}"), final_caption, overlay, rows, ""
@@ -518,6 +560,8 @@ class QwenEngine:
             extension = _caption_extension(settings)
             batch_size = max(1, int(settings.get("file_batch_size", 1) or 1))
             started = time.time()
+            total_generated_tokens = 0
+            total_generation_seconds = 0.0
             for offset in range(0, total, batch_size):
                 if self.stop_flag.value:
                     yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
@@ -529,18 +573,24 @@ class QwenEngine:
                     image_settings = _settings_for_image(settings, path, image)
                     raw = self.generate_caption(image, image_settings)
                     final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
+                    stats = self.last_generation_stats
+                    total_generated_tokens += stats.generated_tokens
+                    total_generation_seconds += stats.elapsed_seconds
                     if warnings:
                         log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                     captions[path.with_suffix(extension).name] = final
                 elapsed = max(time.time() - started, 0.01)
-                yield html_message("info", f"Processed {min(offset + batch_size, total)}/{total} images. Speed {len(captions) / elapsed:.2f} img/s."), None, ""
+                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                yield html_message("info", f"Processed {min(offset + batch_size, total)}/{total} images. Speed {len(captions) / elapsed:.2f} img/s, {token_speed:.2f} tok/s."), None, ""
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
             with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
                 for filename, text in captions.items():
                     archive.writestr(filename, text)
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
-            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+            token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen ZIP batch failed. Check the terminal for details.")
@@ -590,6 +640,8 @@ class QwenEngine:
             processed = 0
             failed = 0
             started = time.time()
+            total_generated_tokens = 0
+            total_generation_seconds = 0.0
             for offset in range(0, len(paths), batch_size):
                 if self.stop_flag.value:
                     yield html_message("info", f"Stopped. Processed {processed}/{len(paths)} queued images, {skipped} skipped."), ""
@@ -608,6 +660,9 @@ class QwenEngine:
                         image_settings = _settings_for_image(settings, path, image)
                         raw = self.generate_caption(image, image_settings)
                         final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
+                        stats = self.last_generation_stats
+                        total_generated_tokens += stats.generated_tokens
+                        total_generation_seconds += stats.elapsed_seconds
                         if warnings:
                             log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                         actual_caption = save_caption_file(
@@ -626,10 +681,13 @@ class QwenEngine:
                         failed += 1
                         log_event(f"Failed {path}: {format_exception(exc)}", SCOPE)
                 elapsed = max(time.time() - started, 0.01)
-                yield html_message("info", f"Processed {processed}/{len(paths)} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s."), ""
+                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                yield html_message("info", f"Processed {processed}/{len(paths)} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s, {token_speed:.2f} tok/s."), ""
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
-            yield html_message("success", f"Qwen folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+            token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+            yield html_message("success", f"Qwen folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), html_message("error", "Qwen folder batch failed. Check the terminal for details.")

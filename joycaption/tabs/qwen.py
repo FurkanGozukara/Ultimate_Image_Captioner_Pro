@@ -102,7 +102,7 @@ DEFAULTS: dict[str, Any] = {
     "invalid_json_text": "",
     "ideogram_json_caption": "",
     "temperature": DEFAULT_PAYLOAD["temperature"],
-    "top_p": 0.9,
+    "top_p": 0.8,
     "top_k": 20,
     "repetition_penalty": 1.0,
     "max_new_tokens": DEFAULT_PAYLOAD["max_new_tokens"],

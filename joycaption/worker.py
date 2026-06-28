@@ -82,6 +82,7 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
         float(settings["top_p"]),
         int(settings["max_new_tokens"]),
     )
+    generation_stats = engine.last_generation_stats
     apply_torch_optimizations(settings, "after")
     after_vram = vram_usage_text()
     metadata = {
@@ -93,6 +94,9 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
         "caption_final": caption,
         "settings": dict(settings),
         "elapsed_seconds": time.time() - start,
+        "generated_tokens": generation_stats.generated_tokens,
+        "generation_elapsed_seconds": generation_stats.elapsed_seconds,
+        "tokens_per_second": generation_stats.tokens_per_second,
         "vram_before": before_vram,
         "vram_after": after_vram,
         "optimizations": optimization_status_text(settings),
@@ -112,7 +116,11 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
         "caption_path": str(caption_path),
         "image_path": str(output_image_path) if output_image_path else None,
         "metadata_path": str(metadata_path),
-        "details": f"{optimization_status_text(settings)}\nBefore {before_vram}\nAfter {after_vram}",
+        "details": (
+            f"Token speed: {generation_stats.generated_tokens} token(s) in "
+            f"{generation_stats.elapsed_seconds:.2f}s ({generation_stats.tokens_per_second:.2f} tok/s)\n"
+            f"{optimization_status_text(settings)}\nBefore {before_vram}\nAfter {after_vram}"
+        ),
     }
 
 

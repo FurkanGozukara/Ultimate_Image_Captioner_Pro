@@ -144,25 +144,34 @@ def _title_from_id(preset_id: str) -> str:
         "i4_json_auto_best": "Ideogram JSON - Auto Best",
         "i4_json_art_style_detailed": "Ideogram JSON - Art / Style Detailed",
         "i4_json_text_poster_logo": "Ideogram JSON - Text / Poster / Logo",
-        "txt_flux2_general": "FLUX.2 Text - General",
-        "txt_flux2_style_lora_content_only": "FLUX.2 LoRA - Style Content Only",
-        "txt_flux2_subject_person_lora": "FLUX.2 LoRA - Subject Person",
-        "txt_flux2_character_lora": "FLUX.2 LoRA - Character",
-        "txt_flux2_product_object_lora": "FLUX.2 LoRA - Product / Object",
+        "txt_flux2_general": "Prompt Text - General",
+        "txt_flux2_style_lora_content_only": "Prompt LoRA - Style Content Only",
+        "txt_flux2_subject_person_lora": "Prompt LoRA - Subject Person",
+        "txt_flux2_character_lora": "Prompt LoRA - Character",
+        "txt_flux2_product_object_lora": "Prompt LoRA - Product / Object",
+        "qc_json_to_flux_caption": "QC - JSON to Prompt Caption",
     }
     if preset_id in overrides:
         return overrides[preset_id]
     title = preset_id
     for prefix, label in (
         ("i4_json_", "Ideogram JSON - "),
-        ("txt_flux2_", "FLUX.2 Text - "),
+        ("txt_flux2_", "Prompt Text - "),
         ("txt_", "Text - "),
         ("qc_", "QC - "),
     ):
         if title.startswith(prefix):
             title = label + title[len(prefix) :]
             break
-    return title.replace("_", " ").replace(" lora", " LoRA").replace(" ocr", " OCR").title().replace("Json", "JSON")
+    return (
+        title.replace("_", " ")
+        .replace(" lora", " LoRA")
+        .replace(" ocr", " OCR")
+        .title()
+        .replace("Json", "JSON")
+        .replace("Lora", "LoRA")
+        .replace("Ocr", "OCR")
+    )
 
 
 def _system_prompt_for(preset_id: str, output_format: str, systems: dict[str, str]) -> str:
@@ -196,7 +205,7 @@ def _fallback_presets() -> dict[str, QwenPreset]:
     system = "You are a precise image captioning engine. Output only the requested caption."
     preset = QwenPreset(
         id="txt_flux2_general",
-        label="FLUX.2 Text - General",
+        label="Prompt Text - General",
         output_format="txt",
         extension=".txt",
         system_prompt=system,

@@ -214,6 +214,20 @@ class LegacyModelBundle:
     processor: Any
 
 
+@dataclass
+class LegacyGenerationStats:
+    generated_tokens: int = 0
+    elapsed_seconds: float = 0.0
+    tokens_per_second: float = 0.0
+
+
+def _generation_stats_text(stats: LegacyGenerationStats) -> str:
+    return (
+        f"{stats.generated_tokens} token(s) in {stats.elapsed_seconds:.2f}s "
+        f"({stats.tokens_per_second:.2f} tok/s)"
+    )
+
+
 def _quant_config(use_4bit: bool, dtype: torch.dtype) -> BitsAndBytesConfig | None:
     if not use_4bit:
         return None
@@ -231,6 +245,20 @@ def _resolve_device(device_id: int | str) -> str:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Use device 'cpu' only if the selected model fits system RAM.")
     return f"cuda:{int(device_id)}"
+
+
+def _stats_device_key(device_id: int | str) -> str:
+    text = str(device_id).lower()
+    if text == "cpu" or text.startswith("cuda"):
+        return text
+    return f"cuda:{int(device_id)}"
+
+
+def _synchronize_if_cuda(device: Any) -> None:
+    if not torch.cuda.is_available():
+        return
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize(device)
 
 
 @contextmanager
@@ -311,8 +339,27 @@ class LegacySiglipEngine:
         self.config = config
         self.stop_flag = BatchStopFlag()
         self._bundle_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
         self._bundles: dict[tuple[str, bool, bool], LegacyModelBundle] = {}
         self._tokenizer_source_cache: str | Path | None = None
+        self.last_generation_stats = LegacyGenerationStats()
+        self._last_generation_stats_by_device: dict[str, LegacyGenerationStats] = {}
+
+    def _record_generation_stats(self, device: int | str, generated_tokens: int, elapsed_seconds: float) -> LegacyGenerationStats:
+        elapsed = max(float(elapsed_seconds), 0.0)
+        stats = LegacyGenerationStats(
+            generated_tokens=max(0, int(generated_tokens)),
+            elapsed_seconds=elapsed,
+            tokens_per_second=max(0, int(generated_tokens)) / max(elapsed, 1e-9),
+        )
+        with self._stats_lock:
+            self.last_generation_stats = stats
+            self._last_generation_stats_by_device[_stats_device_key(device)] = stats
+        return stats
+
+    def _generation_stats_for_device(self, device: int | str) -> LegacyGenerationStats:
+        with self._stats_lock:
+            return self._last_generation_stats_by_device.get(_stats_device_key(device), self.last_generation_stats)
 
     def _should_save_image(self, settings: dict[str, Any]) -> bool:
         if "save_image" in settings:
@@ -548,6 +595,9 @@ class LegacySiglipEngine:
             generation_kwargs["top_k"] = int(settings.get("top_k", 10))
             generation_kwargs["temperature"] = max(float(settings.get("temperature", 0.5)), 1e-5)
         log_event(f"Pre-Alpha: generating caption (max_new_tokens={generation_kwargs['max_new_tokens']}).", self.config.title)
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
         with attention_runtime_context(settings):
             generate_ids = bundle.text_model.generate(
                 input_ids,
@@ -555,11 +605,15 @@ class LegacySiglipEngine:
                 attention_mask=torch.ones_like(input_ids),
                 **generation_kwargs,
             )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.numel() and generate_ids[0][-1] == bundle.tokenizer.eos_token_id:
             generate_ids = generate_ids[:, :-1]
+        generated_token_count = max(0, int(generate_ids.shape[-1]))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
         caption = bundle.tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        log_event("Pre-Alpha: generation complete.", self.config.title)
+        log_event(f"Pre-Alpha: generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
         return prompt_text, self._postprocess(caption, settings)
 
     @torch.inference_mode()
@@ -604,6 +658,9 @@ class LegacySiglipEngine:
             dim=1,
         )
         log_event(f"Alpha 1: generating caption (max_new_tokens={int(settings.get('max_new_tokens', 300))}).", self.config.title)
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
         with attention_runtime_context(settings):
             generate_ids = bundle.text_model.generate(
                 input_ids,
@@ -614,11 +671,15 @@ class LegacySiglipEngine:
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
             )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.shape[1] > 0:
             generate_ids = generate_ids[:, :-1]
+        generated_token_count = max(0, int(generate_ids.shape[-1]))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
         caption = bundle.tokenizer.batch_decode(generate_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)[0]
-        log_event("Alpha 1: generation complete.", self.config.title)
+        log_event(f"Alpha 1: generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
         return prompt_text, self._postprocess(caption, settings)
 
     @torch.inference_mode()
@@ -670,6 +731,9 @@ class LegacySiglipEngine:
             dim=1,
         )
         log_event(f"Alpha 2: generating caption (max_new_tokens={int(settings.get('max_new_tokens', 300))}).", self.config.title)
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
         with attention_runtime_context(settings):
             generate_ids = bundle.text_model.generate(
                 input_ids,
@@ -680,13 +744,17 @@ class LegacySiglipEngine:
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
             )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
         generate_ids = generate_ids[:, input_ids.shape[1] :]
         if generate_ids.shape[1] > 0:
             last = generate_ids[0][-1]
             if last == bundle.tokenizer.eos_token_id or (isinstance(eot_id, int) and last == eot_id):
                 generate_ids = generate_ids[:, :-1]
+        generated_token_count = max(0, int(generate_ids.shape[-1]))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
         caption = bundle.tokenizer.batch_decode(generate_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)[0]
-        log_event("Alpha 2: generation complete.", self.config.title)
+        log_event(f"Alpha 2: generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
         return prompt_text, self._postprocess(caption, settings)
 
     def _postprocess(self, caption: str, settings: dict[str, Any]) -> str:
@@ -753,6 +821,7 @@ class LegacySiglipEngine:
         log_event(f"Loading image: {image_path}", self.config.title)
         image = load_rgb_image(image_path, int(settings.get("max_resolution", 1536) or 1536))
         prompt, caption = self.generate(image, settings)
+        generation_stats = self.last_generation_stats
         apply_torch_optimizations(settings, "after")
         after_vram = vram_usage_text()
         log_event("Saving single image output.", self.config.title)
@@ -762,7 +831,7 @@ class LegacySiglipEngine:
             prefix=str(settings.get("prefix", "")),
             suffix=str(settings.get("suffix", "")),
         )
-        details = f"{optimization_status_text(settings)}\nBefore {before_vram}\nAfter {after_vram}"
+        details = f"Token speed: {_generation_stats_text(generation_stats)}\n{optimization_status_text(settings)}\nBefore {before_vram}\nAfter {after_vram}"
         metadata = {
             "generation_type": "single_image",
             "engine": "legacy_siglip",
@@ -777,6 +846,9 @@ class LegacySiglipEngine:
             "caption_final": final_caption,
             "settings": dict(settings),
             "elapsed_seconds": time.time() - start,
+            "generated_tokens": generation_stats.generated_tokens,
+            "generation_elapsed_seconds": generation_stats.elapsed_seconds,
+            "tokens_per_second": generation_stats.tokens_per_second,
             "vram_before": before_vram,
             "vram_after": after_vram,
             "optimizations": optimization_status_text(settings),
@@ -857,8 +929,12 @@ class LegacySiglipEngine:
         yield progress_text
 
         chunks = [images[idx:: len(devices)] for idx in range(len(devices))]
+        aggregate_lock = threading.Lock()
+        total_generated_tokens = 0
+        total_generation_seconds = 0.0
 
         def worker(device_id: int | str, chunk: list[Path]) -> None:
+            nonlocal total_generated_tokens, total_generation_seconds
             log_event(f"Batch worker started on device {device_id}: {len(chunk)} image(s).", self.config.title)
             processed = 0
             failed = 0
@@ -876,6 +952,11 @@ class LegacySiglipEngine:
                     log_event(f"Device {device_id}: captioning {image_path.name} ({idx}/{len(chunk)}).", self.config.title)
                     image = load_rgb_image(image_path, int(settings.get("max_resolution", 1536) or 1536))
                     _prompt, caption = self.generate(image, settings, device_id=device_id)
+                    stats = self._generation_stats_for_device(device_id)
+                    with aggregate_lock:
+                        total_generated_tokens += stats.generated_tokens
+                        total_generation_seconds += stats.elapsed_seconds
+                        token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
                     actual_caption = save_caption_file(
                         caption_path,
                         caption,
@@ -892,7 +973,7 @@ class LegacySiglipEngine:
                     batch_queue.put(
                         (
                             "progress",
-                            f"Device {device_id}: {processed}/{len(chunk)} processed, {skipped} skipped, {failed} failed. Last {image_path.name} in {elapsed:.2f}s.",
+                            f"Device {device_id}: {processed}/{len(chunk)} processed, {skipped} skipped, {failed} failed. Last {image_path.name} in {elapsed:.2f}s. Token speed {token_speed:.2f} tok/s.",
                         )
                     )
                 except Exception as exc:
@@ -924,7 +1005,10 @@ class LegacySiglipEngine:
         for thread in threads:
             thread.join(timeout=1.0)
         final = "Batch processing stopped." if self.stop_flag.value else "Batch processing complete."
-        yield throttle_status(final, progress_text)
+        with aggregate_lock:
+            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+            token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+        yield throttle_status(f"{final}\nToken speed: {token_detail}", progress_text)
 
 
 def create_pre_alpha_engine(base_dir: Path) -> LegacySiglipEngine:

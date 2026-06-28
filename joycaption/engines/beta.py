@@ -134,6 +134,27 @@ class BetaModelState:
     attention_settings: dict[str, Any] | None = None
 
 
+@dataclass
+class BetaGenerationStats:
+    generated_tokens: int = 0
+    elapsed_seconds: float = 0.0
+    tokens_per_second: float = 0.0
+
+
+def _generation_stats_text(stats: BetaGenerationStats) -> str:
+    return (
+        f"{stats.generated_tokens} token(s) in {stats.elapsed_seconds:.2f}s "
+        f"({stats.tokens_per_second:.2f} tok/s)"
+    )
+
+
+def _synchronize_if_cuda(device: Any) -> None:
+    if not torch.cuda.is_available():
+        return
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize(device)
+
+
 def _token_id(value: Any) -> int | None:
     if value is None:
         return None
@@ -165,6 +186,7 @@ class BetaEngine:
         self.state = BetaModelState(models={})
         self._lock = threading.RLock()
         self.stop_flag = BatchStopFlag()
+        self.last_generation_stats = BetaGenerationStats()
 
     def clear_models(self) -> None:
         with self._lock:
@@ -363,11 +385,22 @@ class BetaEngine:
             generation_kwargs["temperature"] = max(float(temperature), 1e-5)
             generation_kwargs["top_p"] = float(top_p)
         log_event(f"Generating caption | do_sample={do_sample}.", "Joy Caption Beta 1")
+        self.last_generation_stats = BetaGenerationStats()
+        _synchronize_if_cuda(model.device)
+        generation_started = time.time()
         with attention_runtime_context(self.state.attention_settings or {}):
             generate_ids = model.generate(**generation_kwargs)
+        _synchronize_if_cuda(model.device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
         preds = generate_ids[:, inputs["input_ids"].shape[1] :]
+        generated_token_count = max(0, int(preds.shape[-1]))
+        self.last_generation_stats = BetaGenerationStats(
+            generated_tokens=generated_token_count,
+            elapsed_seconds=generation_elapsed,
+            tokens_per_second=generated_token_count / generation_elapsed,
+        )
         caption = processor.tokenizer.decode(preds[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-        log_event("Generation complete.", "Joy Caption Beta 1")
+        log_event(f"Generation complete. Token speed: {_generation_stats_text(self.last_generation_stats)}.", "Joy Caption Beta 1")
         return caption.strip()
 
     def caption_single(
@@ -449,6 +482,7 @@ class BetaEngine:
             log_event(f"Loading image: {image_path}", "Joy Caption Beta 1")
             image = load_rgb_image(image_path)
             caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
+            generation_stats = self.last_generation_stats
             apply_torch_optimizations(optimizations, "after")
             after_vram = vram_usage_text()
             metadata = {
@@ -468,6 +502,9 @@ class BetaEngine:
                     **optimizations,
                 },
                 "elapsed_seconds": time.time() - start,
+                "generated_tokens": generation_stats.generated_tokens,
+                "generation_elapsed_seconds": generation_stats.elapsed_seconds,
+                "tokens_per_second": generation_stats.tokens_per_second,
                 "vram_before": before_vram,
                 "vram_after": after_vram,
                 "optimizations": optimization_status_text(optimizations),
@@ -484,6 +521,7 @@ class BetaEngine:
                 f"Caption saved to: {caption_path}<br>"
                 f"Image output: {output_image_path}<br>"
                 f"Metadata saved to: {metadata_path}<br>"
+                f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"
             )
             yield html_message("success", f"Captioning complete.<br>{detail}"), caption, ""
@@ -583,6 +621,8 @@ class BetaEngine:
             prompt = self.build_prompt(caption_type, caption_length, extra_options, name_input, custom_prompt_text)
             captions: dict[str, str] = {}
             total = len(paths)
+            total_generated_tokens = 0
+            total_generation_seconds = 0.0
             log_event(f"Files-to-ZIP batch started: {total} image(s), batch_size={batch_size}.", "Joy Caption Beta 1")
             for offset in range(0, total, max(1, int(batch_size))):
                 if self.stop_flag.value:
@@ -595,8 +635,15 @@ class BetaEngine:
                     log_event(f"ZIP batch captioning {path.name}.", "Joy Caption Beta 1")
                     image = load_rgb_image(path)
                     caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
+                    stats = self.last_generation_stats
+                    total_generated_tokens += stats.generated_tokens
+                    total_generation_seconds += stats.elapsed_seconds
                     captions[path.with_suffix(".txt").name] = caption
-                yield html_message("info", f"Processed {min(offset + len(batch), total)}/{total} images..."), None, ""
+                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                yield html_message(
+                    "info",
+                    f"Processed {min(offset + len(batch), total)}/{total} images. Token speed {token_speed:.2f} tok/s.",
+                ), None, ""
                 if self.stop_flag.value:
                     yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
                     return
@@ -606,8 +653,10 @@ class BetaEngine:
                     archive.writestr(filename, text)
             apply_torch_optimizations(optimizations, "after")
             after_vram = vram_usage_text()
+            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+            token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
             log_event(f"Files-to-ZIP batch complete: {tmp.name}", "Joy Caption Beta 1")
-            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), None, html_message("error", "ZIP batch failed. Check the terminal for details.")
@@ -736,6 +785,8 @@ class BetaEngine:
             processed = 0
             failed = 0
             started = time.time()
+            total_generated_tokens = 0
+            total_generation_seconds = 0.0
             log_event(f"Folder batch started: {total} queued, {skipped} skipped before run.", "Joy Caption Beta 1")
             for offset in range(0, total, max(1, int(batch_size))):
                 if self.stop_flag.value:
@@ -754,6 +805,9 @@ class BetaEngine:
                         log_event(f"Folder batch captioning {path.name}.", "Joy Caption Beta 1")
                         image = load_rgb_image(path, downscale if downscale > 0 else None)
                         caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
+                        stats = self.last_generation_stats
+                        total_generated_tokens += stats.generated_tokens
+                        total_generation_seconds += stats.elapsed_seconds
                         if discard_repeats_cb:
                             caption = remove_repeating_sentences(caption)
                         caption = clean_legacy_caption(caption)
@@ -776,14 +830,17 @@ class BetaEngine:
                         failed += 1
                         print(f"Failed {path}: {format_exception(exc)}")
                 elapsed = max(0.01, time.time() - started)
+                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
                 yield html_message(
                     "info",
-                    f"Processed {processed}/{total} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s.",
+                    f"Processed {processed}/{total} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s, {token_speed:.2f} tok/s.",
                 ), ""
             apply_torch_optimizations(optimizations, "after")
             after_vram = vram_usage_text()
+            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+            token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
             log_event(f"Folder batch complete: processed={processed}, skipped={skipped}, failed={failed}.", "Joy Caption Beta 1")
-            yield html_message("success", f"Folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+            yield html_message("success", f"Folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), html_message("error", "Folder batch failed. Check the terminal for details.")
