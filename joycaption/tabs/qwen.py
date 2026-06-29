@@ -67,6 +67,7 @@ ORDER = [
     "compact_json",
     "json_retries",
     "remove_newlines",
+    "auto_save_boxed_image",
     "caption_prefix",
     "caption_suffix",
     "device_id",
@@ -115,9 +116,10 @@ DEFAULTS: dict[str, Any] = {
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
     "attention_backend": DEFAULT_VRAM_SETTINGS.get("attention_backend", DEFAULT_QWEN_ATTENTION),
-    "compact_json": False,
+    "compact_json": True,
     "json_retries": 1,
     "remove_newlines": False,
+    "auto_save_boxed_image": True,
     "caption_prefix": "",
     "caption_suffix": "",
     "device_id": "0",
@@ -532,7 +534,9 @@ def build_tab(engine: Any) -> TabUI:
                     components["compact_json"] = gr.Checkbox(label="Compact JSON", value=DEFAULTS["compact_json"])
                     components["json_retries"] = gr.Slider(0, 3, value=DEFAULTS["json_retries"], step=1, label="JSON Repair Retries")
                 with gr.Row():
-                    components["remove_newlines"] = gr.Checkbox(label="Remove newlines for text", value=DEFAULTS["remove_newlines"])
+                    with gr.Column(scale=1):
+                        components["remove_newlines"] = gr.Checkbox(label="Remove newlines for text", value=DEFAULTS["remove_newlines"])
+                        components["auto_save_boxed_image"] = gr.Checkbox(label="Auto Save Boxed Image", value=DEFAULTS["auto_save_boxed_image"])
                     components["caption_prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["caption_prefix"])
                     components["caption_suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["caption_suffix"])
                 components["app_side_only"] = gr.Checkbox(value=DEFAULTS["app_side_only"], visible=False)

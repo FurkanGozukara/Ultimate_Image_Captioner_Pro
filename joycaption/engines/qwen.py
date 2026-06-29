@@ -48,8 +48,9 @@ from ..common import (
     save_caption_file,
     save_numbered_generation,
     vram_usage_text,
+    write_generation_metadata,
 )
-from ..json_tools import json_to_element_rows, normalize_json_output, overlay_html
+from ..json_tools import boxed_image_png_bytes, json_to_element_rows, normalize_json_output, overlay_html, save_boxed_image
 from ..qwen_presets import OFFICIAL_V1_PRESET_ID
 
 
@@ -510,6 +511,30 @@ class QwenEngine:
                 caption_extension=_caption_extension(settings),
             )
             rows = json_to_element_rows(parsed_json, bbox_order="xyxy")
+            boxed_image_path: Path | None = None
+            if bool(settings.get("auto_save_boxed_image", True)) and rows:
+                try:
+                    boxed_source = output_image_path if output_image_path and output_image_path.exists() else image_path
+                    boxed_image_path = save_boxed_image(
+                        boxed_source,
+                        rows,
+                        _run_dir / f"{caption_path.stem}_boxed.png",
+                        bbox_order="xyxy",
+                    )
+                    if boxed_image_path is not None:
+                        enriched_metadata = dict(metadata)
+                        enriched_metadata.update(
+                            {
+                                "output_run_dir": str(_run_dir),
+                                "output_image_path": str(output_image_path) if output_image_path else None,
+                                "caption_path": str(caption_path),
+                                "metadata_path": str(metadata_path),
+                                "boxed_image_path": str(boxed_image_path),
+                            }
+                        )
+                        write_generation_metadata(metadata_path, enriched_metadata)
+                except Exception as exc:
+                    warnings.append(f"Boxed image save failed: {type(exc).__name__}: {exc}")
             overlay_source = _image_for_overlay(image_path, output_image_path)
             overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="xyxy")
             warning_html = ""
@@ -518,6 +543,7 @@ class QwenEngine:
             detail = (
                 f"Caption saved to: {caption_path}<br>"
                 f"Image output: {output_image_path if output_image_path else 'Image copy disabled.'}<br>"
+                f"Boxed image: {boxed_image_path if boxed_image_path else 'No boxed image saved.'}<br>"
                 f"Metadata saved to: {metadata_path}<br>"
                 f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>{warning_html}"
@@ -562,6 +588,7 @@ class QwenEngine:
             started = time.time()
             total_generated_tokens = 0
             total_generation_seconds = 0.0
+            boxed_images: dict[str, bytes] = {}
             for offset in range(0, total, batch_size):
                 if self.stop_flag.value:
                     yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
@@ -572,13 +599,22 @@ class QwenEngine:
                     image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
                     image_settings = _settings_for_image(settings, path, image)
                     raw = self.generate_caption(image, image_settings)
-                    final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
+                    final, parsed, warnings = self._finalize_output(image, raw, image_settings)
                     stats = self.last_generation_stats
                     total_generated_tokens += stats.generated_tokens
                     total_generation_seconds += stats.elapsed_seconds
                     if warnings:
                         log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                     captions[path.with_suffix(extension).name] = final
+                    if bool(settings.get("auto_save_boxed_image", True)):
+                        rows = json_to_element_rows(parsed, bbox_order="xyxy")
+                        if rows:
+                            try:
+                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="xyxy")
+                                if image_bytes:
+                                    boxed_images[f"{path.stem}_boxed.png"] = image_bytes
+                            except Exception as exc:
+                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
                 elapsed = max(time.time() - started, 0.01)
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
                 yield html_message("info", f"Processed {min(offset + batch_size, total)}/{total} images. Speed {len(captions) / elapsed:.2f} img/s, {token_speed:.2f} tok/s."), None, ""
@@ -586,6 +622,8 @@ class QwenEngine:
             with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
                 for filename, text in captions.items():
                     archive.writestr(filename, text)
+                for filename, image_bytes in boxed_images.items():
+                    archive.writestr(filename, image_bytes)
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
@@ -659,7 +697,7 @@ class QwenEngine:
                         image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
                         image_settings = _settings_for_image(settings, path, image)
                         raw = self.generate_caption(image, image_settings)
-                        final, _parsed, warnings = self._finalize_output(image, raw, image_settings)
+                        final, parsed, warnings = self._finalize_output(image, raw, image_settings)
                         stats = self.last_generation_stats
                         total_generated_tokens += stats.generated_tokens
                         total_generation_seconds += stats.elapsed_seconds
@@ -675,6 +713,19 @@ class QwenEngine:
                             suffix="" if extension == ".json" else str(settings.get("caption_suffix", "")),
                         )
                         copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
+                        if bool(settings.get("auto_save_boxed_image", True)):
+                            rows = json_to_element_rows(parsed, bbox_order="xyxy")
+                            if rows:
+                                try:
+                                    boxed_source = output_image_path if output_image_path.exists() else path
+                                    save_boxed_image(
+                                        boxed_source,
+                                        rows,
+                                        output_image_path.with_name(f"{output_image_path.stem}_boxed.png"),
+                                        bbox_order="xyxy",
+                                    )
+                                except Exception as exc:
+                                    log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
                         if actual_caption:
                             processed += 1
                     except Exception as exc:

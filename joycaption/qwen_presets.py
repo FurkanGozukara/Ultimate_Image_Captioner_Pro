@@ -54,7 +54,7 @@ Use object elements as:
 Use readable text elements as:
 {"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"EXACT VISIBLE TEXT","desc":"..."}
 
-Bboxes use normalized integer coordinates from 0 to 1000 in official Ideogram order [y_min, x_min, y_max, x_max]. The origin is top-left. Omit "bbox" when localization is unreliable.
+Bboxes use normalized integer coordinates from 0 to 1000 in official Ideogram order [y_min, x_min, y_max, x_max]. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. The origin is top-left. Omit "bbox" when localization is unreliable.
 
 "aspect_ratio" must be a concrete W:H string for the input image. Never output "auto".
 
@@ -253,7 +253,7 @@ Use element type "obj" for subjects and objects:
 Use element type "text" for readable text:
 {"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"...","desc":"..."}
 
-Bboxes must use normalized integer coordinates from 0 to 1000 in official Ideogram order: [y_min, x_min, y_max, x_max], with the origin at the top-left. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably.
+Bboxes must use normalized integer coordinates from 0 to 1000 in official Ideogram order: [y_min, x_min, y_max, x_max], with the origin at the top-left. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably.
 
 Element descriptions should be concrete and visible-only. Identity first, then major attributes. For people, include visible skin tone, hair color and style, clothing colors, expression or gaze, pose, accessories, and held props when visible. For objects, include shape, material, color, distinctive parts, labels, logos, or markings when visible. Do not include shadows, camera/render jargon, hidden context, backstory, guessed names, guessed brands, or unreadable text guesses.
 
