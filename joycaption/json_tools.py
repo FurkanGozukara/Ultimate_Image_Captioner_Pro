@@ -37,6 +37,20 @@ VERTICAL_BBOX_TERMS = (
     "adult",
     "model",
     "figure",
+    "athlete",
+    "player",
+    "baseball player",
+    "tennis player",
+    "pitcher",
+    "batter",
+    "catcher",
+    "umpire",
+    "line judge",
+    "skier",
+    "snowboarder",
+    "surfer",
+    "skateboarder",
+    "paddleboarder",
     "standing",
     "full body",
     "full-body",
@@ -58,6 +72,9 @@ HORIZONTAL_BBOX_TERMS = (
     "train",
     "boat",
     "ship",
+    "swan",
+    "goose",
+    "duck",
     "airplane",
     "plane",
     "motorcycle",
@@ -74,6 +91,19 @@ HORIZONTAL_BBOX_TERMS = (
     "screen",
     "monitor",
     "keyboard",
+    "sedan",
+    "coupe",
+    "suv",
+    "pickup",
+    "mercedes",
+    "mercedes-benz",
+    "mercedes-amg",
+    "bmw",
+    "audi",
+    "porsche",
+    "ferrari",
+    "lamborghini",
+    "tesla",
 )
 
 
@@ -204,6 +234,30 @@ def clamp_bbox(min_1: Any, min_2: Any, max_1: Any, max_2: Any) -> list[int]:
     return vals
 
 
+def _coerce_bbox_numbers(bbox: Any) -> list[int]:
+    try:
+        raw_values = list(bbox)
+    except Exception:
+        raw_values = []
+    values = raw_values[:4] + [0] * max(0, 4 - len(raw_values))
+    coerced: list[int] = []
+    for value in values[:4]:
+        try:
+            coerced.append(max(0, min(1000, int(round(float(value))))))
+        except Exception:
+            coerced.append(0)
+    return coerced
+
+
+def _axis_pair(first: int, second: int) -> tuple[int, int]:
+    lower, upper = sorted((first, second))
+    if upper <= lower:
+        if lower >= 1000:
+            return 999, 1000
+        return lower, lower + 1
+    return lower, upper
+
+
 def clean_bbox_order(value: Any) -> str:
     return "xyxy" if str(value or "").lower() == "xyxy" else "yxyx"
 
@@ -213,23 +267,24 @@ def headers_for_bbox_order(value: Any) -> list[str]:
 
 
 def bbox_to_yxyx(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
-    first, second, third, fourth = clamp_bbox(*bbox)
+    first, second, third, fourth = _coerce_bbox_numbers(bbox)
     if clean_bbox_order(bbox_order) == "xyxy":
         x_min, y_min, x_max, y_max = first, second, third, fourth
+        y_min, y_max = _axis_pair(y_min, y_max)
+        x_min, x_max = _axis_pair(x_min, x_max)
         return [y_min, x_min, y_max, x_max]
-    return [first, second, third, fourth]
+    y_min, x_min, y_max, x_max = first, second, third, fourth
+    y_min, y_max = _axis_pair(y_min, y_max)
+    x_min, x_max = _axis_pair(x_min, x_max)
+    return [y_min, x_min, y_max, x_max]
 
 
 def row_bbox_to_yxyx(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
-    first, second, third, fourth = clamp_bbox(*bbox)
-    if clean_bbox_order(bbox_order) == "xyxy":
-        x_min, y_min, x_max, y_max = first, second, third, fourth
-        return [y_min, x_min, y_max, x_max]
-    return [first, second, third, fourth]
+    return bbox_to_yxyx(bbox, bbox_order=bbox_order)
 
 
 def yxyx_bbox_to_row(bbox: Any, bbox_order: str = "yxyx") -> list[int]:
-    y_min, x_min, y_max, x_max = clamp_bbox(*bbox)
+    y_min, x_min, y_max, x_max = bbox_to_yxyx(bbox, bbox_order="yxyx")
     if clean_bbox_order(bbox_order) == "xyxy":
         return [x_min, y_min, x_max, y_max]
     return [y_min, x_min, y_max, x_max]
@@ -247,14 +302,53 @@ def _word_hit(text: str, terms: tuple[str, ...]) -> bool:
     return False
 
 
+def _first_word_hit_index(text: str, terms: tuple[str, ...]) -> int | None:
+    value = str(text or "").lower()
+    hits: list[int] = []
+    for term in terms:
+        term = term.lower()
+        if " " in term or "-" in term:
+            index = value.find(term)
+        else:
+            match = re.search(rf"\b{re.escape(term)}\b", value)
+            index = match.start() if match else -1
+        if index >= 0:
+            hits.append(index)
+    return min(hits) if hits else None
+
+
+def _identity_text(text: str) -> str:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    lead = re.split(r"[,.;]\s+", value, maxsplit=1)[0]
+    words = lead.split()
+    return " ".join(words[:18])
+
+
+def _expectation_from_text(text: str) -> str | None:
+    vertical_at = _first_word_hit_index(text, VERTICAL_BBOX_TERMS)
+    horizontal_at = _first_word_hit_index(text, HORIZONTAL_BBOX_TERMS)
+    if vertical_at is None and horizontal_at is None:
+        return None
+    if vertical_at is None:
+        return "horizontal"
+    if horizontal_at is None:
+        return "vertical"
+    return "vertical" if vertical_at <= horizontal_at else "horizontal"
+
+
 def _element_aspect_expectation(element: dict[str, Any]) -> tuple[str | None, float]:
     text = " ".join(str(element.get(key) or "") for key in ("desc", "text", "type"))
     if str(element.get("type") or "").strip() == "text":
         return "horizontal", 1.25
-    if _word_hit(text, HORIZONTAL_BBOX_TERMS):
-        return "horizontal", 2.0
-    if _word_hit(text, VERTICAL_BBOX_TERMS):
-        return "vertical", 2.0
+    identity = _identity_text(text)
+    expectation = _expectation_from_text(identity)
+    if expectation is not None:
+        return expectation, 2.0
+    expectation = _expectation_from_text(text)
+    if expectation is not None:
+        return expectation, 1.0
     return None, 0.0
 
 
@@ -325,6 +419,8 @@ def infer_official_v1_bbox_source_order(data: dict[str, Any] | None) -> tuple[st
 
     margin = xyxy_score - yxyx_score
     if evidence >= 2 and margin >= 4.0:
+        return "xyxy", margin, evidence
+    if evidence == 1 and margin >= 8.0:
         return "xyxy", margin, evidence
     return "yxyx", -margin, evidence
 

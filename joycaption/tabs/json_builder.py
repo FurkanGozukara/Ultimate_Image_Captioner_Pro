@@ -24,10 +24,10 @@ from ..overlay_js import OVERLAY_EDIT_JS
 from .shared import TabUI
 
 
-DEFAULT_BBOX_ORDER = "xyxy"
+DEFAULT_BBOX_ORDER = "yxyx"
 BBOX_ORDER_CHOICES = [
-    ("x_min, y_min, x_max, y_max", "xyxy"),
     ("y_min, x_min, y_max, x_max", "yxyx"),
+    ("x_min, y_min, x_max, y_max", "xyxy"),
 ]
 ASPECT_RATIO_CHOICES = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "Custom"]
 DEFAULT_BUILDER_ROW = ["obj", 80, 80, 360, 360, "", "box 1", ""]

@@ -24,10 +24,10 @@ DEFAULT_PRESET_ID = default_qwen_preset_id()
 DEFAULT_VRAM = default_vram_preset()
 DEFAULT_PAYLOAD = preset_payload(DEFAULT_PRESET_ID)
 DEFAULT_VRAM_SETTINGS = qwen_vram_settings(DEFAULT_VRAM)
-DEFAULT_BBOX_ORDER = "xyxy"
+DEFAULT_BBOX_ORDER = "yxyx"
 BBOX_ORDER_CHOICES = [
-    ("x_min, y_min, x_max, y_max", "xyxy"),
     ("y_min, x_min, y_max, x_max", "yxyx"),
+    ("x_min, y_min, x_max, y_max", "xyxy"),
 ]
 
 ORDER = [

@@ -510,7 +510,7 @@ class QwenEngine:
                 copy_image=bool(settings.get("save_image", True)),
                 caption_extension=_caption_extension(settings),
             )
-            rows = json_to_element_rows(parsed_json, bbox_order="xyxy")
+            rows = json_to_element_rows(parsed_json, bbox_order="yxyx")
             boxed_image_path: Path | None = None
             if bool(settings.get("auto_save_boxed_image", True)) and rows:
                 try:
@@ -519,7 +519,7 @@ class QwenEngine:
                         boxed_source,
                         rows,
                         _run_dir / f"{caption_path.stem}_boxed.png",
-                        bbox_order="xyxy",
+                        bbox_order="yxyx",
                     )
                     if boxed_image_path is not None:
                         enriched_metadata = dict(metadata)
@@ -536,7 +536,7 @@ class QwenEngine:
                 except Exception as exc:
                     warnings.append(f"Boxed image save failed: {type(exc).__name__}: {exc}")
             overlay_source = _image_for_overlay(image_path, output_image_path)
-            overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="xyxy")
+            overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="yxyx")
             warning_html = ""
             if warnings:
                 warning_html = "<br>Warnings:<br><pre>" + "\n".join(warnings) + "</pre>"
@@ -607,10 +607,10 @@ class QwenEngine:
                         log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
                     captions[path.with_suffix(extension).name] = final
                     if bool(settings.get("auto_save_boxed_image", True)):
-                        rows = json_to_element_rows(parsed, bbox_order="xyxy")
+                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
                         if rows:
                             try:
-                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="xyxy")
+                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="yxyx")
                                 if image_bytes:
                                     boxed_images[f"{path.stem}_boxed.png"] = image_bytes
                             except Exception as exc:
@@ -714,7 +714,7 @@ class QwenEngine:
                         )
                         copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
                         if bool(settings.get("auto_save_boxed_image", True)):
-                            rows = json_to_element_rows(parsed, bbox_order="xyxy")
+                            rows = json_to_element_rows(parsed, bbox_order="yxyx")
                             if rows:
                                 try:
                                     boxed_source = output_image_path if output_image_path.exists() else path
@@ -722,7 +722,7 @@ class QwenEngine:
                                         boxed_source,
                                         rows,
                                         output_image_path.with_name(f"{output_image_path.stem}_boxed.png"),
-                                        bbox_order="xyxy",
+                                        bbox_order="yxyx",
                                     )
                                 except Exception as exc:
                                     log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
