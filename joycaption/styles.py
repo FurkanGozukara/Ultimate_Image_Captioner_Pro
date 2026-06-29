@@ -159,6 +159,75 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   white-space: pre !important;
 }
 
+.jc-generated-json-header {
+  align-items: center !important;
+  gap: 8px !important;
+  margin-bottom: 4px;
+}
+
+.jc-generated-json-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.jc-generated-json-title .prose {
+  margin: 0 !important;
+}
+
+.jc-copy-json-control {
+  flex: 0 0 auto !important;
+  min-width: 34px !important;
+}
+
+.jc-copy-json-control .block,
+.jc-copy-json-control .html-container,
+.jc-copy-json-control .prose {
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.jc-copy-json-button {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.jc-copy-json-button:hover {
+  border-color: #38bdf8;
+  background: rgba(14, 116, 144, 0.42);
+  color: #ffffff;
+}
+
+.jc-copy-json-button.is-copied {
+  border-color: #22c55e;
+  color: #bbf7d0;
+}
+
+.jc-copy-json-button.is-failed {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
+.jc-copy-json-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .jc-qwen-workspace {
   min-width: 0;
 }

@@ -289,6 +289,79 @@ if (!element.dataset.jcQwenOverlayBound) {
 """
 
 
+COPY_JSON_HTML = """
+<button type="button" class="jc-copy-json-button" title="Copy JSON" aria-label="Copy JSON">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+  </svg>
+</button>
+"""
+
+
+COPY_JSON_JS = r"""
+if (!element.dataset.jcCopyJsonBound) {
+  element.dataset.jcCopyJsonBound = "1";
+
+  const button = element.querySelector(".jc-copy-json-button");
+  const textareaSelector = "#jc-qwen-generated-json textarea";
+
+  const setState = (state) => {
+    if (!button) return;
+    button.classList.remove("is-copied", "is-failed");
+    if (state) button.classList.add(state);
+    if (state === "is-copied") button.title = "Copied";
+    else if (state === "is-failed") button.title = "Copy failed";
+    else button.title = "Copy JSON";
+    window.clearTimeout(button._jcCopyTimer);
+    if (state) {
+      button._jcCopyTimer = window.setTimeout(() => setState(""), 1200);
+    }
+  };
+
+  const fallbackCopy = (text) => {
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.position = "fixed";
+    scratch.style.left = "-9999px";
+    scratch.style.top = "0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      scratch.remove();
+    }
+  };
+
+  button?.addEventListener("click", async () => {
+    const textarea = document.querySelector(textareaSelector);
+    const text = textarea?.value || "";
+    if (!text.trim()) {
+      setState("is-failed");
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else if (!fallbackCopy(text)) {
+        throw new Error("fallback copy failed");
+      }
+      setState("is-copied");
+    } catch {
+      try {
+        if (fallbackCopy(text)) setState("is-copied");
+        else setState("is-failed");
+      } catch {
+        setState("is-failed");
+      }
+    }
+  });
+}
+"""
+
+
 def _variables(
     trigger_phrase,
     output_language,
@@ -404,10 +477,14 @@ def build_tab(engine: Any) -> TabUI:
                         open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"])
 
                 with gr.Column(scale=5, elem_classes=["jc-compact"]):
+                    with gr.Row(elem_classes=["jc-generated-json-header"]):
+                        gr.Markdown("**Generated Caption / JSON**", elem_classes=["jc-generated-json-title"])
+                        gr.HTML(COPY_JSON_HTML, elem_classes=["jc-copy-json-control"], js_on_load=COPY_JSON_JS)
                     output_caption = gr.Textbox(
-                        label="Generated Caption / JSON",
+                        label="",
                         lines=18,
                         interactive=True,
+                        elem_id="jc-qwen-generated-json",
                         elem_classes=["jc-output", "jc-codeish"],
                     )
                     with gr.Row():

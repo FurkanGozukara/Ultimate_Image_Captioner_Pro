@@ -209,6 +209,12 @@ def _apply_detected_aspect_ratio(
     return ordered, filtered_warnings
 
 
+def _caption_for_display(final_caption: str, parsed: dict[str, Any] | None) -> str:
+    if isinstance(parsed, dict):
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    return final_caption
+
+
 class ConsoleProgressStoppingCriteria(StoppingCriteria):
     def __init__(self, label: str, prompt_tokens: int, max_new_tokens: int) -> None:
         self.label = label
@@ -478,6 +484,7 @@ class QwenEngine:
             image_settings = _settings_for_image(settings, image_path, image)
             raw_caption = self.generate_caption(image, image_settings)
             final_caption, parsed_json, warnings = self._finalize_output(image, raw_caption, image_settings)
+            display_caption = _caption_for_display(final_caption, parsed_json)
             generation_stats = self.last_generation_stats
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
@@ -548,7 +555,7 @@ class QwenEngine:
                 f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>{warning_html}"
             )
-            yield html_message("success", f"Qwen generation complete.<br>{detail}"), final_caption, overlay, rows, ""
+            yield html_message("success", f"Qwen generation complete.<br>{detail}"), display_caption, overlay, rows, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen generation failed. Check the terminal for details.")

@@ -17,8 +17,8 @@ from ..json_tools import (
     clean_bbox_order,
     headers_for_bbox_order,
     json_to_element_rows,
+    normalize_json_output,
     overlay_html,
-    parse_json_caption,
 )
 from ..overlay_js import OVERLAY_EDIT_JS
 from .shared import TabUI
@@ -31,6 +31,7 @@ BBOX_ORDER_CHOICES = [
 ]
 ASPECT_RATIO_CHOICES = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "Custom"]
 DEFAULT_BUILDER_ROW = ["obj", 80, 80, 360, 360, "", "box 1", ""]
+BUILDER_PRESET_ID = "i4_official_v1_app_compare"
 
 
 TABLE_EDIT_JS = r"""
@@ -194,6 +195,10 @@ def _rows_from_snapshot(snapshot: Any, fallback: Any) -> list[list[Any]]:
     return _row_data(fallback)
 
 
+def _cell_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
 def _df_value(rows: Any, bbox_order: str = DEFAULT_BBOX_ORDER) -> Any:
     import pandas as pd
 
@@ -248,13 +253,13 @@ def _table_editor_html(rows: Any, selected: Any, bbox_order: str = DEFAULT_BBOX_
         if row_index >= len(row_data):
             continue
         values = row_data[row_index] + [""] * max(0, len(headers) - len(row_data[row_index]))
-        if not any(str(cell or "").strip() for cell in values):
+        if not any(_cell_text(cell).strip() for cell in values):
             continue
         rendered += 1
         parts.append("<tr>")
         for col_index, value in enumerate(values[: len(headers)]):
             input_type = "number" if 1 <= col_index <= 4 else "text"
-            escaped_value = html.escape(str(value or ""), quote=True)
+            escaped_value = html.escape(_cell_text(value), quote=True)
             parts.append(
                 f'<td><input type="{input_type}" value="{escaped_value}" '
                 f'data-row-index="{row_index}" data-col-index="{col_index}" /></td>'
@@ -293,7 +298,7 @@ def _box_choices(rows: Any) -> list[str]:
     choices: list[str] = []
     for index, row in enumerate(_row_data(rows), start=1):
         values = row + [""] * max(0, 8 - len(row))
-        if not any(str(cell or "").strip() for cell in values):
+        if not any(_cell_text(cell).strip() for cell in values):
             continue
         label = str(values[6] or values[5] or values[7] or values[0] or "box")
         label = " ".join(label.split())
@@ -316,8 +321,20 @@ def _preserve_visible(rows: Any, selected: Any, default_all: bool = False) -> tu
 def _sidecar_json_for_image(image_path: str | Path | None) -> Path | None:
     if not image_path:
         return None
-    candidate = Path(image_path).with_suffix(".json")
-    return candidate if candidate.exists() else None
+    path = Path(image_path)
+    candidate = path.with_suffix(".json")
+    if candidate.exists():
+        return candidate
+    if path.stem.endswith("_boxed"):
+        boxed_source_candidate = path.with_name(path.stem[: -len("_boxed")] + ".json")
+        if boxed_source_candidate.exists():
+            return boxed_source_candidate
+    fallback_stem = path.stem[: -len("_boxed")] if path.stem.endswith("_boxed") else path.stem
+    try:
+        matches = sorted(OUTPUTS_DIR.rglob(f"{fallback_stem}.json"), key=lambda item: str(item).lower())
+    except Exception:
+        matches = []
+    return matches[-1] if matches else None
 
 
 def _fields_from_json(parsed: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str, str]:
@@ -568,7 +585,7 @@ def build_tab() -> TabUI:
 
     def import_json(json_text, image_path, ratio_value, width_value, height_value, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
-        parsed, pretty, warnings = parse_json_caption(json_text)
+        pretty, parsed, warnings = normalize_json_output(json_text, preset_id=BUILDER_PRESET_ID, compact=False)
         if parsed is None:
             empty_overlay = _overlay(image_path, ratio_value, width_value, height_value, [], bbox_order_value, [], disable_auto_update_value)
             return (
@@ -665,7 +682,7 @@ def build_tab() -> TabUI:
                 html_message("info", f"Loaded image, but no same-name JSON was found: {image_path.with_suffix('.json')}"),
             )
         text = sidecar.read_text(encoding="utf-8")
-        parsed, pretty, warnings = parse_json_caption(text)
+        pretty, parsed, warnings = normalize_json_output(text, preset_id=BUILDER_PRESET_ID, compact=False)
         if parsed is None:
             empty_overlay = _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, [], bbox_order_value, [], disable_auto_update_value)
             return (
@@ -708,6 +725,9 @@ def build_tab() -> TabUI:
             _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, rows, bbox_order_value, visible, disable_auto_update_value),
             status_html,
         )
+
+    def load_preview_image_choice(selected_image, bbox_order_value, disable_auto_update_value):
+        return load_output_choice(selected_image, bbox_order_value, disable_auto_update_value)[1:]
 
     def update_box_visibility(image_path, ratio_value, width_value, height_value, rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -907,5 +927,6 @@ def build_tab() -> TabUI:
     ]
     output_image.change(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
     load_output_btn.click(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
+    image.change(load_preview_image_choice, inputs=[image, bbox_order, disable_auto_update], outputs=load_outputs[1:], queue=False)
 
     return TabUI(key="json_builder", order=[], defaults={}, inputs=[])
