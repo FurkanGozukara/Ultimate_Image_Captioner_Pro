@@ -897,7 +897,7 @@ class LegacySiglipEngine:
         include_subfolders = bool(settings.get("process_subfolders", True))
         overwrite = bool(settings.get("overwrite", False))
         append = bool(settings.get("append", False))
-        preserve_subfolders = False
+        preserve_subfolders = include_subfolders
 
         if not input_folder.is_dir():
             yield f"Input folder not found: {input_folder}"

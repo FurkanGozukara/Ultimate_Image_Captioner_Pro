@@ -44,6 +44,7 @@ from ..common import (
     natural_sort_key,
     parse_device_ids,
     remove_repeating_sentences,
+    resolve_output_paths,
     reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
@@ -833,7 +834,12 @@ class BetaEngine:
             paths: list[Path] = []
             skipped = 0
             for path in all_paths:
-                caption_path = output_dir / Path(path.name).with_suffix(".txt")
+                _, caption_path = resolve_output_paths(
+                    path,
+                    input_dir,
+                    output_dir,
+                    preserve_subfolders=process_subfolders_cb,
+                )
                 if caption_path.exists() and not overwrite_caption_cb:
                     skipped += 1
                     continue
@@ -862,9 +868,12 @@ class BetaEngine:
                     if self.stop_flag.value:
                         break
                     try:
-                        relative = Path(path.name)
-                        output_image_path = output_dir / relative
-                        output_caption_path = output_dir / relative.with_suffix(".txt")
+                        output_image_path, output_caption_path = resolve_output_paths(
+                            path,
+                            input_dir,
+                            output_dir,
+                            preserve_subfolders=process_subfolders_cb,
+                        )
                         if output_caption_path.exists() and not overwrite_caption_cb:
                             skipped += 1
                             continue
