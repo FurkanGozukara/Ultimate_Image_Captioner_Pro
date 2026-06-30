@@ -1100,7 +1100,7 @@ class BetaEngine:
                     output_dir,
                     preserve_subfolders=process_subfolders_cb,
                 )
-                if caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
+                if caption_path.exists() and not overwrite_caption_cb and not append_caption_cb:
                     skipped += 1
                     continue
                 paths.append(path)
@@ -1296,7 +1296,7 @@ class BetaEngine:
                                     output_dir,
                                     preserve_subfolders=process_subfolders_cb,
                                 )
-                                if output_caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
+                                if output_caption_path.exists() and not overwrite_caption_cb and not append_caption_cb:
                                     aggregate["skipped"] += 1
                                     local_skipped += 1
                                     continue
@@ -1496,7 +1496,7 @@ def _beta_folder_process_worker(
                     output_dir,
                     preserve_subfolders=process_subfolders_cb,
                 )
-                if output_caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
+                if output_caption_path.exists() and not overwrite_caption_cb and not append_caption_cb:
                     local_skipped += 1
                     continue
                 work_items.append((path, output_image_path, output_caption_path))

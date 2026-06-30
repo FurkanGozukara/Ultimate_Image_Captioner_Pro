@@ -929,7 +929,7 @@ class QwenEngine:
             for path in all_paths:
                 relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
                 caption_path = (output_dir / relative).with_suffix(extension)
-                if caption_path.exists() and skip_exists and not overwrite and not append:
+                if caption_path.exists() and not overwrite and not append:
                     skipped += 1
                     continue
                 paths.append(path)
@@ -1102,7 +1102,7 @@ class QwenEngine:
                                 relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
                                 output_image_path = output_dir / relative
                                 output_caption_path = output_image_path.with_suffix(extension)
-                                if output_caption_path.exists() and skip_exists and not overwrite and not append:
+                                if output_caption_path.exists() and not overwrite and not append:
                                     aggregate["skipped"] += 1
                                     local_skipped += 1
                                     continue
@@ -1300,7 +1300,7 @@ def _qwen_folder_process_worker(
                 relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
                 output_image_path = output_dir / relative
                 output_caption_path = output_image_path.with_suffix(extension)
-                if output_caption_path.exists() and skip_exists and not overwrite and not append:
+                if output_caption_path.exists() and not overwrite and not append:
                     local_skipped += 1
                     continue
                 work_items.append((path, output_image_path, output_caption_path))

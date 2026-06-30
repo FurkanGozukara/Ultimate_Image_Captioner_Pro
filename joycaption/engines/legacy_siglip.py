@@ -1169,7 +1169,7 @@ class LegacySiglipEngine:
         skipped_initial = 0
         for image_path in all_images:
             _, caption_path = self._caption_path_for_batch(image_path, input_folder, output_folder, preserve_subfolders)
-            if caption_path.exists() and skip_existing and not overwrite and not append:
+            if caption_path.exists() and not overwrite and not append:
                 skipped_initial += 1
                 continue
             images.append(image_path)
@@ -1350,7 +1350,7 @@ class LegacySiglipEngine:
                 with aggregate_lock:
                     for image_path in batch_paths:
                         output_image_path, caption_path = self._caption_path_for_batch(image_path, input_folder, output_folder, preserve_subfolders)
-                        if caption_path.exists() and skip_existing and not overwrite and not append:
+                        if caption_path.exists() and not overwrite and not append:
                             aggregate["skipped"] += 1
                             local_skipped += 1
                             continue
@@ -1539,7 +1539,7 @@ def _legacy_folder_process_worker(
                     output_folder,
                     preserve_subfolders,
                 )
-                if caption_path.exists() and skip_existing and not overwrite and not append:
+                if caption_path.exists() and not overwrite and not append:
                     local_skipped += 1
                     continue
                 work_items.append((image_path, output_image_path, caption_path))
