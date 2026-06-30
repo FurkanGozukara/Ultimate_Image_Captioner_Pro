@@ -9,7 +9,20 @@ from typing import Any
 
 from PIL import Image
 
-from .common import BASE_DIR, OUTPUTS_DIR, apply_torch_optimizations, log_event, optimization_status_text, parse_device_ids, reset_vram_peak_stats, save_numbered_generation, vram_usage_text
+from .common import (
+    BASE_DIR,
+    OUTPUTS_DIR,
+    apply_torch_optimizations,
+    clean_legacy_caption,
+    finalize_caption_text,
+    log_event,
+    optimization_status_text,
+    parse_device_ids,
+    remove_repeating_sentences,
+    reset_vram_peak_stats,
+    save_numbered_generation,
+    vram_usage_text,
+)
 from .engines.beta import BetaEngine
 from .engines.qwen import QwenEngine
 from .engines.legacy_siglip import (
@@ -75,7 +88,7 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
     before_vram = vram_usage_text()
     engine.load_model(str(settings["quant"]), str(settings["device_id"]), settings)
     log_event("Beta model loaded. Generating caption.", "Worker")
-    caption = engine.generate_caption(
+    raw_caption = engine.generate_caption(
         image,
         str(settings["prompt"]),
         float(settings["temperature"]),
@@ -85,13 +98,27 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
     generation_stats = engine.last_generation_stats
     apply_torch_optimizations(settings, "after")
     after_vram = vram_usage_text()
+    caption = raw_caption
+    if bool(settings.get("discard_repeats", True)):
+        caption = remove_repeating_sentences(caption)
+    caption = clean_legacy_caption(caption)
+    final_caption = finalize_caption_text(
+        caption,
+        remove_newlines=bool(settings.get("remove_newlines", True)),
+        prefix=str(settings.get("caption_prefix") or ""),
+        suffix=str(settings.get("caption_suffix") or ""),
+        replace_pairs=settings.get("replace_pairs"),
+        replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+        replace_single_word=bool(settings.get("replace_single_word", False)),
+    )
     metadata = {
         "generation_type": "single_image",
         "engine": "beta_one",
         "model_path": str(engine.model_path),
         "source_image_path": str(payload["image_path"]),
         "prompt": str(settings["prompt"]),
-        "caption_final": caption,
+        "caption_raw": raw_caption,
+        "caption_final": final_caption,
         "settings": dict(settings),
         "elapsed_seconds": time.time() - start,
         "generated_tokens": generation_stats.generated_tokens,
@@ -103,7 +130,7 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
     }
     output_image_path, caption_path, metadata_path, _run_dir = save_numbered_generation(
         payload["image_path"],
-        caption,
+        final_caption,
         metadata,
         OUTPUTS_DIR,
         copy_image=bool(settings.get("save_image", True)),
@@ -112,7 +139,7 @@ def beta_single(payload: dict[str, Any]) -> dict[str, Any]:
     log_event(f"Beta single complete: caption_path={caption_path}", "Worker")
     return {
         "ok": True,
-        "caption": caption,
+        "caption": final_caption,
         "caption_path": str(caption_path),
         "image_path": str(output_image_path) if output_image_path else None,
         "metadata_path": str(metadata_path),
@@ -151,6 +178,13 @@ def beta_zip(payload: dict[str, Any]) -> dict[str, Any]:
         bool(settings.get("low_cpu_mem_usage", True)),
         str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         bool(settings.get("use_liger_kernel", True)),
+        bool(settings.get("remove_newlines", True)),
+        bool(settings.get("discard_repeats", True)),
+        settings.get("caption_prefix") or "",
+        settings.get("caption_suffix") or "",
+        settings.get("replace_pairs"),
+        bool(settings.get("replace_case_sensitive", False)),
+        bool(settings.get("replace_single_word", False)),
     ):
         last_status = status
         zip_path = output or zip_path
@@ -197,6 +231,9 @@ def beta_folder(payload: dict[str, Any]) -> dict[str, Any]:
         bool(settings.get("low_cpu_mem_usage", True)),
         str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         bool(settings.get("use_liger_kernel", True)),
+        settings.get("replace_pairs"),
+        bool(settings.get("replace_case_sensitive", False)),
+        bool(settings.get("replace_single_word", False)),
     ):
         last_status = status
         error_html = error or error_html

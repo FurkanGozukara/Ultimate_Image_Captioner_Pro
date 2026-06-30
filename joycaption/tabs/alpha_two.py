@@ -8,7 +8,7 @@ from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..common import get_all_extra_options
 from ..prompt_options import ALPHA_TWO_CAPTION_TYPE_MAP
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, legacy_vram_settings
-from .shared import TabUI, error_triple, run_open_folder, run_open_outputs, settings_from_values
+from .shared import TabUI, build_replace_pair_controls, error_triple, run_open_folder, run_open_outputs, settings_from_values
 
 
 ORDER = [
@@ -34,6 +34,9 @@ ORDER = [
     "max_new_tokens",
     "prefix",
     "suffix",
+    "replace_pairs",
+    "replace_case_sensitive",
+    "replace_single_word",
     "custom_prompt",
     "device_id",
     "input_folder",
@@ -67,6 +70,9 @@ DEFAULTS: dict[str, Any] = {
     "max_new_tokens": 300,
     "prefix": "",
     "suffix": "",
+    "replace_pairs": [],
+    "replace_case_sensitive": False,
+    "replace_single_word": False,
     "custom_prompt": "",
     "device_id": "0",
     "input_folder": "",
@@ -115,12 +121,17 @@ def build_tab(engine: Any) -> TabUI:
                 components["custom_prompt"] = gr.Textbox(label="Custom Prompt", lines=3, value=DEFAULTS["custom_prompt"])
 
             with gr.Accordion("Output", open=True):
-                components["vram_preset"] = gr.Dropdown(
-                    choices=VRAM_PRESET_CHOICES,
-                    value=DEFAULTS["vram_preset"],
-                    label="VRAM Preset",
-                    allow_custom_value=False,
-                )
+                with gr.Row():
+                    components["vram_preset"] = gr.Dropdown(
+                        choices=VRAM_PRESET_CHOICES,
+                        value=DEFAULTS["vram_preset"],
+                        label="VRAM Preset",
+                        allow_custom_value=False,
+                    )
+                    components["use_subprocess"] = gr.Checkbox(
+                        label="Run single and batch in subprocess, then terminate it",
+                        value=DEFAULTS["use_subprocess"],
+                    )
                 with gr.Row():
                     components["overwrite"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite"])
                     components["append"] = gr.Checkbox(label="Append captions", value=DEFAULTS["append"])
@@ -134,13 +145,10 @@ def build_tab(engine: Any) -> TabUI:
                 with gr.Row():
                     components["use_fp16"] = gr.Checkbox(label="Use FP16", value=DEFAULTS["use_fp16"])
                     components["use_4bit"] = gr.Checkbox(label="Use 4-bit Quantization", value=DEFAULTS["use_4bit"])
-                components["use_subprocess"] = gr.Checkbox(
-                    label="Run single and batch in subprocess, then terminate it",
-                    value=DEFAULTS["use_subprocess"],
-                )
                 with gr.Row():
-                    components["prefix"] = gr.Textbox(label="Caption Prefix", value=DEFAULTS["prefix"])
-                    components["suffix"] = gr.Textbox(label="Caption Suffix", value=DEFAULTS["suffix"])
+                    components["prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["prefix"])
+                    components["suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["suffix"])
+                build_replace_pair_controls(components, DEFAULTS)
                 components["device_id"] = gr.Textbox(label="Single Image Device ID", value=DEFAULTS["device_id"])
 
             with gr.Accordion("Optimizations", open=False):

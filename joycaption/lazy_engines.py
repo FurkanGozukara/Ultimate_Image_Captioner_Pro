@@ -237,6 +237,13 @@ class LazyBetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        remove_newlines: bool = True,
+        discard_repeats: bool = True,
+        caption_prefix: str = "",
+        caption_suffix: str = "",
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
@@ -256,6 +263,13 @@ class LazyBetaEngine:
                 low_cpu_mem_usage,
                 attention_backend,
                 use_liger_kernel,
+                remove_newlines,
+                discard_repeats,
+                caption_prefix,
+                caption_suffix,
+                replace_pairs,
+                replace_case_sensitive,
+                replace_single_word,
             )
             return
 
@@ -284,6 +298,13 @@ class LazyBetaEngine:
                         "quant": quant,
                         "device_id": device_id,
                         "save_image": save_image,
+                        "remove_newlines": remove_newlines,
+                        "discard_repeats": discard_repeats,
+                        "caption_prefix": caption_prefix,
+                        "caption_suffix": caption_suffix,
+                        "replace_pairs": replace_pairs,
+                        "replace_case_sensitive": replace_case_sensitive,
+                        "replace_single_word": replace_single_word,
                         **optimizations,
                     },
                 },
@@ -320,6 +341,13 @@ class LazyBetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        remove_newlines: bool = True,
+        discard_repeats: bool = True,
+        caption_prefix: str = "",
+        caption_suffix: str = "",
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
@@ -343,6 +371,13 @@ class LazyBetaEngine:
                 low_cpu_mem_usage,
                 attention_backend,
                 use_liger_kernel,
+                remove_newlines,
+                discard_repeats,
+                caption_prefix,
+                caption_suffix,
+                replace_pairs,
+                replace_case_sensitive,
+                replace_single_word,
             )
             return
         if not files_list:
@@ -367,6 +402,13 @@ class LazyBetaEngine:
                         "batch_size": batch_size,
                         "quant": quant,
                         "device_id": device_id,
+                        "remove_newlines": remove_newlines,
+                        "discard_repeats": discard_repeats,
+                        "caption_prefix": caption_prefix,
+                        "caption_suffix": caption_suffix,
+                        "replace_pairs": replace_pairs,
+                        "replace_case_sensitive": replace_case_sensitive,
+                        "replace_single_word": replace_single_word,
                         "allow_tf32": allow_tf32,
                         "clear_cuda_cache": clear_cuda_cache,
                         "low_cpu_mem_usage": low_cpu_mem_usage,
@@ -412,6 +454,9 @@ class LazyBetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
@@ -446,6 +491,9 @@ class LazyBetaEngine:
                 low_cpu_mem_usage,
                 attention_backend,
                 use_liger_kernel,
+                replace_pairs,
+                replace_case_sensitive,
+                replace_single_word,
             )
             return
         try:
@@ -466,6 +514,9 @@ class LazyBetaEngine:
                         "downscale_max_res": downscale_max_res_str,
                         "caption_prefix": caption_prefix,
                         "caption_suffix": caption_suffix,
+                        "replace_pairs": replace_pairs,
+                        "replace_case_sensitive": replace_case_sensitive,
+                        "replace_single_word": replace_single_word,
                         "caption_type": caption_type,
                         "caption_length": caption_length,
                         "extra_options": list(extra_options or []),

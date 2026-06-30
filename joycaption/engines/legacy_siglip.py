@@ -830,6 +830,9 @@ class LegacySiglipEngine:
             remove_newlines=bool(settings.get("remove_newlines", True)),
             prefix=str(settings.get("prefix", "")),
             suffix=str(settings.get("suffix", "")),
+            replace_pairs=settings.get("replace_pairs"),
+            replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+            replace_single_word=bool(settings.get("replace_single_word", False)),
         )
         details = f"Token speed: {_generation_stats_text(generation_stats)}\n{optimization_status_text(settings)}\nBefore {before_vram}\nAfter {after_vram}"
         metadata = {
@@ -965,6 +968,9 @@ class LegacySiglipEngine:
                         remove_newlines=bool(settings.get("remove_newlines", True)),
                         prefix=str(settings.get("prefix", "")),
                         suffix=str(settings.get("suffix", "")),
+                        replace_pairs=settings.get("replace_pairs"),
+                        replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+                        replace_single_word=bool(settings.get("replace_single_word", False)),
                     )
                     copy_image_if_needed(image_path, output_image_path, self._should_save_image(settings))
                     processed += 1 if actual_caption else 0

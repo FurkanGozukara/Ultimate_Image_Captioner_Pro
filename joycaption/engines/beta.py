@@ -420,6 +420,13 @@ class BetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        remove_newlines: bool = True,
+        discard_repeats: bool = True,
+        caption_prefix: str = "",
+        caption_suffix: str = "",
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str, str], None, None]:
         log_event("Single image caption requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -449,6 +456,13 @@ class BetaEngine:
                             "quant": quant,
                             "device_id": device_id,
                             "save_image": save_image,
+                            "remove_newlines": remove_newlines,
+                            "discard_repeats": discard_repeats,
+                            "caption_prefix": caption_prefix,
+                            "caption_suffix": caption_suffix,
+                            "replace_pairs": replace_pairs,
+                            "replace_case_sensitive": replace_case_sensitive,
+                            "replace_single_word": replace_single_word,
                             **optimizations,
                         },
                     },
@@ -481,17 +495,31 @@ class BetaEngine:
             yield html_message("info", f"{status} Generating caption..."), "", ""
             log_event(f"Loading image: {image_path}", "Joy Caption Beta 1")
             image = load_rgb_image(image_path)
-            caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
+            raw_caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
             generation_stats = self.last_generation_stats
             apply_torch_optimizations(optimizations, "after")
             after_vram = vram_usage_text()
+            caption = raw_caption
+            if discard_repeats:
+                caption = remove_repeating_sentences(caption)
+            caption = clean_legacy_caption(caption)
+            final_caption = finalize_caption_text(
+                caption,
+                remove_newlines=remove_newlines,
+                prefix=caption_prefix,
+                suffix=caption_suffix,
+                replace_pairs=replace_pairs,
+                replace_case_sensitive=replace_case_sensitive,
+                replace_single_word=replace_single_word,
+            )
             metadata = {
                 "generation_type": "single_image",
                 "engine": "beta_one",
                 "model_path": str(self.model_path),
                 "source_image_path": str(image_path),
                 "prompt": prompt,
-                "caption_final": caption,
+                "caption_raw": raw_caption,
+                "caption_final": final_caption,
                 "settings": {
                     "temperature": temperature,
                     "top_p": top_p,
@@ -499,6 +527,13 @@ class BetaEngine:
                     "quant": quant,
                     "device_id": device_id,
                     "save_image": save_image,
+                    "remove_newlines": remove_newlines,
+                    "discard_repeats": discard_repeats,
+                    "caption_prefix": caption_prefix,
+                    "caption_suffix": caption_suffix,
+                    "replace_pairs": replace_pairs,
+                    "replace_case_sensitive": replace_case_sensitive,
+                    "replace_single_word": replace_single_word,
                     **optimizations,
                 },
                 "elapsed_seconds": time.time() - start,
@@ -511,7 +546,7 @@ class BetaEngine:
             }
             output_image_path, caption_path, metadata_path, _run_dir = save_numbered_generation(
                 image_path,
-                caption,
+                final_caption,
                 metadata,
                 OUTPUTS_DIR,
                 copy_image=bool(save_image),
@@ -524,7 +559,7 @@ class BetaEngine:
                 f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"
             )
-            yield html_message("success", f"Captioning complete.<br>{detail}"), caption, ""
+            yield html_message("success", f"Captioning complete.<br>{detail}"), final_caption, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), "", html_message("error", "Generation failed. Check the terminal for details.")
@@ -567,6 +602,13 @@ class BetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        remove_newlines: bool = True,
+        discard_repeats: bool = True,
+        caption_prefix: str = "",
+        caption_suffix: str = "",
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         log_event("Files-to-ZIP batch requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -600,6 +642,13 @@ class BetaEngine:
                             "batch_size": batch_size,
                             "quant": quant,
                             "device_id": device_id,
+                            "remove_newlines": remove_newlines,
+                            "discard_repeats": discard_repeats,
+                            "caption_prefix": caption_prefix,
+                            "caption_suffix": caption_suffix,
+                            "replace_pairs": replace_pairs,
+                            "replace_case_sensitive": replace_case_sensitive,
+                            "replace_single_word": replace_single_word,
                             **optimizations,
                         },
                     },
@@ -638,7 +687,18 @@ class BetaEngine:
                     stats = self.last_generation_stats
                     total_generated_tokens += stats.generated_tokens
                     total_generation_seconds += stats.elapsed_seconds
-                    captions[path.with_suffix(".txt").name] = caption
+                    if discard_repeats:
+                        caption = remove_repeating_sentences(caption)
+                    caption = clean_legacy_caption(caption)
+                    captions[path.with_suffix(".txt").name] = finalize_caption_text(
+                        caption,
+                        remove_newlines=remove_newlines,
+                        prefix=caption_prefix,
+                        suffix=caption_suffix,
+                        replace_pairs=replace_pairs,
+                        replace_case_sensitive=replace_case_sensitive,
+                        replace_single_word=replace_single_word,
+                    )
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
                 yield html_message(
                     "info",
@@ -694,6 +754,9 @@ class BetaEngine:
         low_cpu_mem_usage: bool = True,
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
+        replace_pairs: Any | None = None,
+        replace_case_sensitive: bool = False,
+        replace_single_word: bool = False,
     ) -> Generator[tuple[str, str], None, None]:
         log_event("Folder batch requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -722,6 +785,9 @@ class BetaEngine:
                             "downscale_max_res": downscale_max_res_str,
                             "caption_prefix": caption_prefix,
                             "caption_suffix": caption_suffix,
+                            "replace_pairs": replace_pairs,
+                            "replace_case_sensitive": replace_case_sensitive,
+                            "replace_single_word": replace_single_word,
                             "caption_type": caption_type,
                             "caption_length": caption_length,
                             "extra_options": list(extra_options or []),
@@ -819,6 +885,9 @@ class BetaEngine:
                             remove_newlines=remove_newlines_cb,
                             prefix=caption_prefix,
                             suffix=caption_suffix,
+                            replace_pairs=replace_pairs,
+                            replace_case_sensitive=replace_case_sensitive,
+                            replace_single_word=replace_single_word,
                         )
                         copy_image_if_needed(path, output_image_path, copy_images_cb)
                         if actual_caption:

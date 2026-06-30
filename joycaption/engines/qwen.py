@@ -135,6 +135,9 @@ def _normalize_text_output(text: str, settings: dict[str, Any]) -> str:
         remove_newlines=bool(settings.get("remove_newlines", False)),
         prefix=str(settings.get("caption_prefix", "")),
         suffix=str(settings.get("caption_suffix", "")),
+        replace_pairs=settings.get("replace_pairs"),
+        replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+        replace_single_word=bool(settings.get("replace_single_word", False)),
     )
 
 
@@ -732,9 +735,9 @@ class QwenEngine:
                             final,
                             overwrite=overwrite,
                             append=append,
-                            remove_newlines=False if extension == ".json" else bool(settings.get("remove_newlines", False)),
-                            prefix="" if extension == ".json" else str(settings.get("caption_prefix", "")),
-                            suffix="" if extension == ".json" else str(settings.get("caption_suffix", "")),
+                            remove_newlines=False,
+                            prefix="",
+                            suffix="",
                         )
                         copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
                         if save_boxed_images:

@@ -7,9 +7,10 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image, ImageOps
 
@@ -204,10 +205,61 @@ def finalize_caption_text(
     remove_newlines: bool = True,
     prefix: str = "",
     suffix: str = "",
+    replace_pairs: Any | None = None,
+    replace_case_sensitive: bool = False,
+    replace_single_word: bool = False,
 ) -> str:
     if remove_newlines:
         caption = " ".join(str(caption).split())
+    caption = apply_replace_pairs(
+        str(caption),
+        replace_pairs,
+        case_sensitive=replace_case_sensitive,
+        single_word=replace_single_word,
+    )
     return f"{prefix or ''}{caption}{suffix or ''}"
+
+
+def normalize_replace_pairs(value: Any) -> list[list[str]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return []
+    pairs: list[list[str]] = []
+    if not isinstance(value, Iterable) or isinstance(value, (bytes, bytearray, dict)):
+        return pairs
+    for item in value:
+        find_text = ""
+        replace_text = ""
+        if isinstance(item, dict):
+            find_text = str(item.get("find") or item.get("from") or item.get("source") or "")
+            replace_text = str(item.get("replace") or item.get("to") or item.get("target") or "")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            find_text = str(item[0] or "")
+            replace_text = str(item[1] or "")
+        find_text = find_text.strip()
+        if find_text:
+            pairs.append([find_text, replace_text])
+    return pairs
+
+
+def apply_replace_pairs(
+    text: str,
+    replace_pairs: Any | None,
+    case_sensitive: bool = False,
+    single_word: bool = False,
+) -> str:
+    result = str(text or "")
+    flags = 0 if case_sensitive else re.IGNORECASE
+    for find_text, replace_text in normalize_replace_pairs(replace_pairs):
+        pattern = re.escape(find_text)
+        if single_word:
+            pattern = rf"(?<!\w){pattern}(?!\w)"
+        result = re.sub(pattern, str(replace_text), result, flags=flags)
+    return result
 
 
 def write_generation_metadata(metadata_path: str | Path, metadata: dict[str, Any]) -> Path:
@@ -282,9 +334,20 @@ def save_caption_file(
     remove_newlines: bool = True,
     prefix: str = "",
     suffix: str = "",
+    replace_pairs: Any | None = None,
+    replace_case_sensitive: bool = False,
+    replace_single_word: bool = False,
 ) -> Path | None:
     caption_path = Path(caption_path)
-    final_caption = finalize_caption_text(caption, remove_newlines=remove_newlines, prefix=prefix, suffix=suffix)
+    final_caption = finalize_caption_text(
+        caption,
+        remove_newlines=remove_newlines,
+        prefix=prefix,
+        suffix=suffix,
+        replace_pairs=replace_pairs,
+        replace_case_sensitive=replace_case_sensitive,
+        replace_single_word=replace_single_word,
+    )
     caption_path.parent.mkdir(parents=True, exist_ok=True)
     if caption_path.exists():
         if overwrite:

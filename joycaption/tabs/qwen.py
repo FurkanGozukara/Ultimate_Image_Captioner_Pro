@@ -17,7 +17,7 @@ from ..json_tools import (
 )
 from ..qwen_presets import default_qwen_preset_id, preset_payload, qwen_preset_choices
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, qwen_vram_settings
-from .shared import TabUI, run_open_folder, run_open_outputs, settings_from_values
+from .shared import TabUI, build_replace_pair_controls, run_open_folder, run_open_outputs, settings_from_values
 
 
 DEFAULT_PRESET_ID = default_qwen_preset_id()
@@ -80,6 +80,9 @@ ORDER = [
     "auto_save_boxed_image",
     "caption_prefix",
     "caption_suffix",
+    "replace_pairs",
+    "replace_case_sensitive",
+    "replace_single_word",
     "device_id",
     "file_batch_size",
     "folder_input",
@@ -133,6 +136,9 @@ DEFAULTS: dict[str, Any] = {
     "auto_save_boxed_image": True,
     "caption_prefix": "",
     "caption_suffix": "",
+    "replace_pairs": [],
+    "replace_case_sensitive": False,
+    "replace_single_word": False,
     "device_id": "0",
     "file_batch_size": DEFAULT_VRAM_SETTINGS["file_batch_size"],
     "folder_input": "",
@@ -584,12 +590,17 @@ def build_tab(engine: Any) -> TabUI:
                 components["ideogram_json_caption"] = gr.Textbox(label="Ideogram JSON Caption", lines=3, value=DEFAULTS["ideogram_json_caption"])
 
             with gr.Accordion("Generation & Model", open=True):
-                components["vram_preset"] = gr.Dropdown(
-                    choices=VRAM_PRESET_CHOICES,
-                    value=DEFAULTS["vram_preset"],
-                    label="VRAM Preset",
-                    allow_custom_value=False,
-                )
+                with gr.Row():
+                    components["vram_preset"] = gr.Dropdown(
+                        choices=VRAM_PRESET_CHOICES,
+                        value=DEFAULTS["vram_preset"],
+                        label="VRAM Preset",
+                        allow_custom_value=False,
+                    )
+                    components["use_subprocess"] = gr.Checkbox(
+                        label="Run single and batch in subprocess, then terminate it",
+                        value=DEFAULTS["use_subprocess"],
+                    )
                 with gr.Row():
                     components["model_quantization"] = gr.Radio(
                         choices=["bf16", "fp16", "int8", "nf4"],
@@ -609,10 +620,6 @@ def build_tab(engine: Any) -> TabUI:
                 with gr.Row():
                     components["save_image"] = gr.Checkbox(label="Save image copy", value=DEFAULTS["save_image"])
                     components["unload_model"] = gr.Checkbox(label="Unload after run", value=DEFAULTS["unload_model"])
-                components["use_subprocess"] = gr.Checkbox(
-                    label="Run single and batch in subprocess, then terminate it",
-                    value=DEFAULTS["use_subprocess"],
-                )
                 with gr.Row():
                     components["allow_tf32"] = gr.Checkbox(label="Allow TF32", value=DEFAULTS["allow_tf32"])
                     components["clear_cuda_cache"] = gr.Checkbox(label="Clear CUDA cache", value=DEFAULTS["clear_cuda_cache"])
@@ -628,11 +635,12 @@ def build_tab(engine: Any) -> TabUI:
                     components["compact_json"] = gr.Checkbox(label="Compact JSON", value=DEFAULTS["compact_json"])
                     components["json_retries"] = gr.Slider(0, 3, value=DEFAULTS["json_retries"], step=1, label="JSON Repair Retries")
                 with gr.Row():
-                    with gr.Column(scale=1):
-                        components["remove_newlines"] = gr.Checkbox(label="Remove newlines for text", value=DEFAULTS["remove_newlines"])
-                        components["auto_save_boxed_image"] = gr.Checkbox(label="Auto Save Boxed Image", value=DEFAULTS["auto_save_boxed_image"])
+                    components["remove_newlines"] = gr.Checkbox(label="Remove newlines for text", value=DEFAULTS["remove_newlines"])
+                    components["auto_save_boxed_image"] = gr.Checkbox(label="Auto Save Boxed Image", value=DEFAULTS["auto_save_boxed_image"])
+                with gr.Row():
                     components["caption_prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["caption_prefix"])
                     components["caption_suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["caption_suffix"])
+                build_replace_pair_controls(components, DEFAULTS)
                 components["app_side_only"] = gr.Checkbox(value=DEFAULTS["app_side_only"], visible=False)
 
     with gr.Row(equal_height=False):

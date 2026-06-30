@@ -9,7 +9,7 @@ from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..common import NAME_OPTION, get_all_extra_options, html_message, save_custom_extra_option
 from ..prompt_options import BETA_CAPTION_TYPE_MAP as CAPTION_TYPE_MAP
 from ..vram import VRAM_PRESET_CHOICES, beta_vram_settings, default_vram_preset
-from .shared import TabUI, run_open_folder, run_open_outputs
+from .shared import TabUI, build_replace_pair_controls, run_open_folder, run_open_outputs
 
 
 ORDER = [
@@ -46,6 +46,9 @@ ORDER = [
     "downscale_max_res",
     "caption_prefix",
     "caption_suffix",
+    "replace_pairs",
+    "replace_case_sensitive",
+    "replace_single_word",
     "folder_num_workers",
     "folder_batch_size",
 ]
@@ -84,6 +87,9 @@ DEFAULTS: dict[str, Any] = {
     "downscale_max_res": "1536",
     "caption_prefix": "",
     "caption_suffix": "",
+    "replace_pairs": [],
+    "replace_case_sensitive": False,
+    "replace_single_word": False,
     "folder_num_workers": min(4, os.cpu_count() or 4),
     "folder_batch_size": 4,
 }
@@ -148,13 +154,7 @@ def build_tab(engine: Any) -> TabUI:
                 with gr.Row():
                     components["overwrite_caption"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite_caption"])
                     components["append_caption"] = gr.Checkbox(label="Append captions", value=DEFAULTS["append_caption"])
-                with gr.Row():
-                    components["remove_newlines"] = gr.Checkbox(label="Remove newlines", value=DEFAULTS["remove_newlines"])
-                    components["discard_repeats"] = gr.Checkbox(label="Discard repeating sentences", value=DEFAULTS["discard_repeats"])
                 components["downscale_max_res"] = gr.Textbox(label="Downscale Max Resolution", value=DEFAULTS["downscale_max_res"])
-                with gr.Row():
-                    components["caption_prefix"] = gr.Textbox(label="Caption Prefix", value=DEFAULTS["caption_prefix"])
-                    components["caption_suffix"] = gr.Textbox(label="Caption Suffix", value=DEFAULTS["caption_suffix"])
                 with gr.Row():
                     components["folder_num_workers"] = gr.Slider(
                         0,
@@ -172,12 +172,17 @@ def build_tab(engine: Any) -> TabUI:
     with gr.Row(equal_height=False):
         with gr.Column(scale=1):
             with gr.Accordion("Model", open=True):
-                components["vram_preset"] = gr.Dropdown(
-                    choices=VRAM_PRESET_CHOICES,
-                    value=DEFAULTS["vram_preset"],
-                    label="VRAM Preset",
-                    allow_custom_value=False,
-                )
+                with gr.Row():
+                    components["vram_preset"] = gr.Dropdown(
+                        choices=VRAM_PRESET_CHOICES,
+                        value=DEFAULTS["vram_preset"],
+                        label="VRAM Preset",
+                        allow_custom_value=False,
+                    )
+                    components["use_subprocess"] = gr.Checkbox(
+                        label="Run single and batch in subprocess, then terminate it",
+                        value=DEFAULTS["use_subprocess"],
+                    )
                 components["model_quantization"] = gr.Radio(
                     choices=["bf16", "int8", "nf4"],
                     value=DEFAULTS["model_quantization"],
@@ -185,10 +190,6 @@ def build_tab(engine: Any) -> TabUI:
                 )
                 components["unload_model"] = gr.Checkbox(label="Unload model after single caption", value=DEFAULTS["unload_model"])
                 components["save_image"] = gr.Checkbox(label="Save image copy", value=DEFAULTS["save_image"])
-                components["use_subprocess"] = gr.Checkbox(
-                    label="Run single and batch in subprocess, then terminate it",
-                    value=DEFAULTS["use_subprocess"],
-                )
                 components["device_id"] = gr.Textbox(label="Device ID", value=DEFAULTS["device_id"])
             with gr.Accordion("Optimizations", open=False):
                 with gr.Row():
@@ -222,6 +223,15 @@ def build_tab(engine: Any) -> TabUI:
                     components["top_p"] = gr.Slider(0.0, 1.0, value=DEFAULTS["top_p"], step=0.01, label="Top-p")
                     components["max_tokens"] = gr.Slider(1, 2048, value=DEFAULTS["max_tokens"], step=1, label="Max New Tokens")
                 components["custom_prompt"] = gr.Textbox(label="Custom Prompt Override", lines=3, value=DEFAULTS["custom_prompt"])
+
+            with gr.Accordion("Output Text", open=True):
+                with gr.Row():
+                    components["remove_newlines"] = gr.Checkbox(label="Remove newlines", value=DEFAULTS["remove_newlines"])
+                    components["discard_repeats"] = gr.Checkbox(label="Discard repeating sentences", value=DEFAULTS["discard_repeats"])
+                with gr.Row():
+                    components["caption_prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["caption_prefix"])
+                    components["caption_suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["caption_suffix"])
+                build_replace_pair_controls(components, DEFAULTS)
 
     with gr.Accordion("Extra Options", open=True):
         with gr.Row():
@@ -322,6 +332,13 @@ def build_tab(engine: Any) -> TabUI:
             components["low_cpu_mem_usage"],
             components["attention_backend"],
             components["use_liger_kernel"],
+            components["remove_newlines"],
+            components["discard_repeats"],
+            components["caption_prefix"],
+            components["caption_suffix"],
+            components["replace_pairs"],
+            components["replace_case_sensitive"],
+            components["replace_single_word"],
         ],
         outputs=[single_status, output_caption, global_error],
     )
@@ -350,6 +367,13 @@ def build_tab(engine: Any) -> TabUI:
             components["low_cpu_mem_usage"],
             components["attention_backend"],
             components["use_liger_kernel"],
+            components["remove_newlines"],
+            components["discard_repeats"],
+            components["caption_prefix"],
+            components["caption_suffix"],
+            components["replace_pairs"],
+            components["replace_case_sensitive"],
+            components["replace_single_word"],
         ],
         outputs=[batch_status, zip_output, global_error],
     )
@@ -389,6 +413,9 @@ def build_tab(engine: Any) -> TabUI:
             components["low_cpu_mem_usage"],
             components["attention_backend"],
             components["use_liger_kernel"],
+            components["replace_pairs"],
+            components["replace_case_sensitive"],
+            components["replace_single_word"],
         ],
         outputs=[folder_status, global_error],
     )

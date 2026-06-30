@@ -12,6 +12,8 @@ button.btn-reset-preset { background: #ca8a04 !important; color: #ffffff !import
 button.btn-delete-preset { background: #dc2626 !important; color: #ffffff !important; border-color: #dc2626 !important; }
 .btn-refresh button,
 button.btn-refresh { background: #0d9488 !important; color: #ffffff !important; border-color: #0d9488 !important; }
+.btn-add-replace-pair button,
+button.btn-add-replace-pair { background: #0f766e !important; color: #ffffff !important; border-color: #0f766e !important; }
 
 .btn-pre-caption button,
 button.btn-pre-caption { background: #0d9488 !important; color: #ffffff !important; border-color: #0d9488 !important; }
@@ -66,6 +68,7 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 .btn-reset-preset button:hover,
 .btn-delete-preset button:hover,
 .btn-refresh button:hover,
+.btn-add-replace-pair button:hover,
 .btn-pre-caption button:hover,
 .btn-pre-batch button:hover,
 .btn-pre-stop button:hover,
@@ -157,6 +160,75 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   overflow: auto !important;
   resize: vertical !important;
   white-space: pre !important;
+}
+
+.jc-replace-pairs .block,
+.jc-replace-pairs .html-container,
+.jc-replace-pairs .prose {
+  min-height: 0 !important;
+  padding: 0 !important;
+}
+
+.jc-replace-empty {
+  padding: 8px 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.jc-replace-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.jc-replace-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 6px;
+  padding: 5px 6px 5px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.32);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.jc-replace-find,
+.jc-replace-to {
+  overflow-wrap: anywhere;
+}
+
+.jc-replace-find {
+  font-weight: 700;
+}
+
+.jc-replace-arrow {
+  color: #94a3b8;
+}
+
+.jc-replace-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: #dc2626;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.jc-replace-remove:hover {
+  background: #b91c1c;
 }
 
 .jc-generated-json-header {
