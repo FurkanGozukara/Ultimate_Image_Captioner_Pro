@@ -387,7 +387,7 @@ def load_qwen_presets() -> dict[str, QwenPreset]:
 
 
 def qwen_preset_choices() -> list[tuple[str, str]]:
-    return [(preset.label, preset.id) for preset in load_qwen_presets().values()]
+    return [(f"{index}. {preset.label}", preset.id) for index, preset in enumerate(load_qwen_presets().values(), start=1)]
 
 
 def default_qwen_preset_id() -> str:

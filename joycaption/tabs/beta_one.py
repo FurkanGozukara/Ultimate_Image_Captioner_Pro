@@ -270,8 +270,22 @@ def build_tab(engine: Any) -> TabUI:
         components["custom_prompt"],
     ]
     for prompt_component in prompt_inputs:
-        prompt_component.change(update_prompt, inputs=prompt_inputs, outputs=components["single_prompt"])
-    components["extra_options"].change(toggle_name, inputs=[components["extra_options"]], outputs=[components["name_input"]])
+        prompt_component.change(
+            update_prompt,
+            inputs=prompt_inputs,
+            outputs=components["single_prompt"],
+            queue=False,
+            show_progress="hidden",
+            show_progress_on=[],
+        )
+    components["extra_options"].change(
+        toggle_name,
+        inputs=[components["extra_options"]],
+        outputs=[components["name_input"]],
+        queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
+    )
 
     add_option_btn.click(add_option, inputs=[new_extra_option], outputs=[option_status, components["extra_options"], new_extra_option])
     refresh_option_btn.click(refresh_options, outputs=[option_status, components["extra_options"]])
@@ -286,6 +300,8 @@ def build_tab(engine: Any) -> TabUI:
             components["folder_batch_size"],
         ],
         queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
     )
 
     single_btn.click(

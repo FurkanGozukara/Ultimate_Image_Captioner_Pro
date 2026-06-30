@@ -62,6 +62,10 @@ def _default_payload(sections: list[TabUI]) -> dict[str, dict[str, Any]]:
     return {section.key: deepcopy(section.defaults) for section in sections}
 
 
+def _numbered_preset_choices(preset_names: list[str]) -> list[tuple[str, str]]:
+    return [(f"{index}. {preset_name}", preset_name) for index, preset_name in enumerate(preset_names, start=1)]
+
+
 def build_app() -> gr.Blocks:
     ensure_runtime_dirs()
     preset_store = UniversalPresetStore()
@@ -89,7 +93,7 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("**Universal Preset**")
                     with gr.Row():
                         preset_dropdown = gr.Dropdown(
-                            choices=preset_store.list_presets(),
+                            choices=_numbered_preset_choices(preset_store.list_presets()),
                             label="Preset",
                             allow_custom_value=False,
                             scale=2,
@@ -132,19 +136,19 @@ def build_app() -> gr.Blocks:
                     return gr.update(), html_message("error", "Enter a preset name or select an existing preset."), ""
                 payload = _split_values(tabs, list(values))
                 saved_name = preset_store.save(target, payload)
-                choices = preset_store.list_presets()
+                choices = _numbered_preset_choices(preset_store.list_presets())
                 return gr.update(choices=choices, value=saved_name), html_message("success", f"Saved universal preset '{saved_name}'."), ""
 
             def load_preset(selected_name: str | None):
                 if not selected_name:
-                    return [* _flat_values_from_payload(tabs, _default_payload(tabs)), html_message("info", "No preset selected."), gr.update(choices=preset_store.list_presets(), value=None)]
+                    return [* _flat_values_from_payload(tabs, _default_payload(tabs)), html_message("info", "No preset selected."), gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=None)]
                 payload = preset_store.load(selected_name)
                 if not payload:
-                    return [* _flat_values_from_payload(tabs, _default_payload(tabs)), html_message("error", f"Preset '{selected_name}' was not found."), gr.update(choices=preset_store.list_presets(), value=None)]
+                    return [* _flat_values_from_payload(tabs, _default_payload(tabs)), html_message("error", f"Preset '{selected_name}' was not found."), gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=None)]
                 return [
                     *_flat_values_from_payload(tabs, payload),
                     html_message("success", f"Loaded universal preset '{selected_name}'."),
-                    gr.update(choices=preset_store.list_presets(), value=selected_name),
+                    gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=selected_name),
                 ]
 
             def reset_defaults():
@@ -152,14 +156,14 @@ def build_app() -> gr.Blocks:
                 return [
                     *_flat_values_from_payload(tabs, _default_payload(tabs)),
                     html_message("success", "Reset all tabs to defaults."),
-                    gr.update(choices=preset_store.list_presets(), value=None),
+                    gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=None),
                 ]
 
             def delete_preset(selected_name: str | None):
                 if not selected_name:
                     return gr.update(), html_message("error", "No preset selected.")
                 if preset_store.delete(selected_name):
-                    return gr.update(choices=preset_store.list_presets(), value=None), html_message("success", f"Deleted preset '{selected_name}'.")
+                    return gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=None), html_message("success", f"Deleted preset '{selected_name}'.")
                 return gr.update(), html_message("error", f"Could not delete preset '{selected_name}'.")
 
             def load_startup_preset():
@@ -167,12 +171,12 @@ def build_app() -> gr.Blocks:
                 if selected_name and payload:
                     return [
                         *_flat_values_from_payload(tabs, payload),
-                        gr.update(choices=preset_store.list_presets(), value=selected_name),
+                        gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=selected_name),
                         html_message("success", f"Loaded last used preset '{selected_name}'."),
                     ]
                 return [
                     *_flat_values_from_payload(tabs, _default_payload(tabs)),
-                    gr.update(choices=preset_store.list_presets(), value=None),
+                    gr.update(choices=_numbered_preset_choices(preset_store.list_presets()), value=None),
                     html_message("info", "No preset selected."),
                 ]
 
@@ -181,35 +185,47 @@ def build_app() -> gr.Blocks:
                 inputs=[preset_name, preset_dropdown] + flat_inputs,
                 outputs=[preset_dropdown, preset_status, preset_name],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
             )
             load_preset_btn.click(
                 load_preset,
                 inputs=[preset_dropdown],
                 outputs=flat_inputs + [preset_status, preset_dropdown],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
             )
             preset_dropdown.change(
                 load_preset,
                 inputs=[preset_dropdown],
                 outputs=flat_inputs + [preset_status, preset_dropdown],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
             )
             reset_preset_btn.click(
                 reset_defaults,
                 outputs=flat_inputs + [preset_status, preset_dropdown],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
             )
             delete_preset_btn.click(
                 delete_preset,
                 inputs=[preset_dropdown],
                 outputs=[preset_dropdown, preset_status],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
             )
             theme_mode.change(
                 fn=lambda value: value,
                 inputs=[theme_mode],
                 outputs=[theme_mode],
                 queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
                 js="""
                 (value) => {
                   const url = new URL(window.location.href);
@@ -219,7 +235,13 @@ def build_app() -> gr.Blocks:
                 }
                 """,
             )
-            demo.load(load_startup_preset, outputs=flat_inputs + [preset_dropdown, preset_status], queue=False)
+            demo.load(
+                load_startup_preset,
+                outputs=flat_inputs + [preset_dropdown, preset_status],
+                queue=False,
+                show_progress="hidden",
+                show_progress_on=[],
+            )
 
     demo.queue(default_concurrency_limit=1)
     return demo

@@ -204,6 +204,8 @@ def build_tab(engine: Any) -> TabUI:
             components["batch_size"],
         ],
         queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
     )
 
     return TabUI(key="pre_alpha", order=ORDER, defaults=DEFAULTS, inputs=ordered_components)

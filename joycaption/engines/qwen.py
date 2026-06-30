@@ -677,6 +677,7 @@ class QwenEngine:
         overwrite = bool(settings.get("overwrite_caption", False))
         append = bool(settings.get("append_caption", False))
         skip_exists = bool(settings.get("skip_exists", True))
+        save_boxed_images = bool(settings.get("auto_save_boxed_image", True)) and not bool(settings.get("dont_save_boxed_images", False))
         try:
             all_paths = discover_images(input_dir, include_subfolders=process_subfolders)
             paths: list[Path] = []
@@ -736,7 +737,7 @@ class QwenEngine:
                             suffix="" if extension == ".json" else str(settings.get("caption_suffix", "")),
                         )
                         copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
-                        if bool(settings.get("auto_save_boxed_image", True)):
+                        if save_boxed_images:
                             rows = json_to_element_rows(parsed, bbox_order="yxyx")
                             if rows:
                                 try:

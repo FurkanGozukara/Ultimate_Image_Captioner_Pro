@@ -88,6 +88,7 @@ ORDER = [
     "overwrite_caption",
     "append_caption",
     "process_subfolders",
+    "dont_save_boxed_images",
     "folder_batch_size",
     "app_side_only",
 ]
@@ -140,6 +141,7 @@ DEFAULTS: dict[str, Any] = {
     "overwrite_caption": False,
     "append_caption": False,
     "process_subfolders": False,
+    "dont_save_boxed_images": False,
     "folder_batch_size": DEFAULT_VRAM_SETTINGS["folder_batch_size"],
     "app_side_only": DEFAULT_PAYLOAD["app_side_only"],
 }
@@ -657,6 +659,7 @@ def build_tab(engine: Any) -> TabUI:
                 with gr.Row():
                     components["skip_exists"] = gr.Checkbox(label="Skip existing outputs", value=DEFAULTS["skip_exists"])
                     components["process_subfolders"] = gr.Checkbox(label="Process subfolders", value=DEFAULTS["process_subfolders"])
+                    components["dont_save_boxed_images"] = gr.Checkbox(label="Don't save boxed images", value=DEFAULTS["dont_save_boxed_images"])
                 with gr.Row():
                     components["overwrite_caption"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite_caption"])
                     components["append_caption"] = gr.Checkbox(label="Append captions", value=DEFAULTS["append_caption"])
@@ -870,9 +873,23 @@ def build_tab(engine: Any) -> TabUI:
         components["app_side_only"],
     ]
     preset_inputs = [components["preset_id"], components["vram_preset"]] + variable_inputs
-    components["preset_id"].change(apply_preset, inputs=preset_inputs, outputs=preset_outputs, queue=False)
+    components["preset_id"].change(
+        apply_preset,
+        inputs=preset_inputs,
+        outputs=preset_outputs,
+        queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
+    )
     for variable_component in variable_inputs:
-        variable_component.change(apply_preset, inputs=preset_inputs, outputs=preset_outputs, queue=False)
+        variable_component.change(
+            apply_preset,
+            inputs=preset_inputs,
+            outputs=preset_outputs,
+            queue=False,
+            show_progress="hidden",
+            show_progress_on=[],
+        )
     components["vram_preset"].change(
         apply_vram_preset,
         inputs=[components["vram_preset"]],
@@ -885,6 +902,8 @@ def build_tab(engine: Any) -> TabUI:
             components["max_new_tokens"],
         ],
         queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
     )
 
     single_event = single_btn.click(
