@@ -607,7 +607,11 @@ def build_tab(engine: Any) -> TabUI:
                         value=DEFAULTS["model_quantization"],
                         label="Quantization",
                     )
-                    components["device_id"] = gr.Textbox(label="Device ID", value=DEFAULTS["device_id"])
+                    components["device_id"] = gr.Textbox(
+                        label="Device ID",
+                        value=DEFAULTS["device_id"],
+                        info="Use 0,1 for dual-GPU folder/ZIP batches; images are split evenly across both GPUs. Single image uses the first ID.",
+                    )
                 with gr.Row():
                     components["temperature"] = gr.Slider(0.0, 2.0, value=DEFAULTS["temperature"], step=0.01, label="Temperature")
                     components["top_p"] = gr.Slider(0.0, 1.0, value=DEFAULTS["top_p"], step=0.01, label="Top-p")

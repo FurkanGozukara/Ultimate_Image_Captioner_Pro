@@ -149,7 +149,11 @@ def build_tab(engine: Any) -> TabUI:
                     components["prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["prefix"])
                     components["suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["suffix"])
                 build_replace_pair_controls(components, DEFAULTS)
-                components["device_id"] = gr.Textbox(label="Single Image Device ID", value=DEFAULTS["device_id"])
+                components["device_id"] = gr.Textbox(
+                    label="Single Image Device ID",
+                    value=DEFAULTS["device_id"],
+                    info="Single image uses one device. For folder batch dual GPU, enter 0,1 in GPU IDs below to split images evenly across both GPUs.",
+                )
 
             with gr.Accordion("Optimizations", open=False):
                 with gr.Row():
@@ -171,7 +175,11 @@ def build_tab(engine: Any) -> TabUI:
         with gr.Row():
             components["process_subfolders"] = gr.Checkbox(label="Process subfolders", value=DEFAULTS["process_subfolders"])
             components["skip_existing"] = gr.Checkbox(label="Skip existing captions", value=DEFAULTS["skip_existing"])
-            components["gpu_ids"] = gr.Textbox(label="GPU IDs", value=DEFAULTS["gpu_ids"])
+            components["gpu_ids"] = gr.Textbox(
+                label="GPU IDs",
+                value=DEFAULTS["gpu_ids"],
+                info="Use 0,1 to run folder batch on dual GPU with equal distribution across devices.",
+            )
             components["batch_size"] = gr.Slider(1, 32, value=DEFAULTS["batch_size"], step=1, label="Batch Size")
         with gr.Row():
             batch_btn = gr.Button("Start Alpha 2 Folder Batch", elem_classes=["btn-alpha2-batch"])

@@ -75,7 +75,7 @@ DEFAULTS: dict[str, Any] = {
     "extra_options": [],
     "name_input": "",
     "zip_num_workers": min(4, os.cpu_count() or 4),
-    "zip_batch_size": 4,
+    "zip_batch_size": 1,
     "folder_input": "",
     "folder_output": "",
     "skip_exists": True,
@@ -91,7 +91,7 @@ DEFAULTS: dict[str, Any] = {
     "replace_case_sensitive": False,
     "replace_single_word": False,
     "folder_num_workers": min(4, os.cpu_count() or 4),
-    "folder_batch_size": 4,
+    "folder_batch_size": 1,
 }
 
 
@@ -184,13 +184,17 @@ def build_tab(engine: Any) -> TabUI:
                         value=DEFAULTS["use_subprocess"],
                     )
                 components["model_quantization"] = gr.Radio(
-                    choices=["bf16", "int8", "nf4"],
+                    choices=["bf16", "fp16", "int8", "nf4"],
                     value=DEFAULTS["model_quantization"],
-                    label="Model Quantization",
+                    label="Model Dtype / Quantization",
                 )
                 components["unload_model"] = gr.Checkbox(label="Unload model after single caption", value=DEFAULTS["unload_model"])
                 components["save_image"] = gr.Checkbox(label="Save image copy", value=DEFAULTS["save_image"])
-                components["device_id"] = gr.Textbox(label="Device ID", value=DEFAULTS["device_id"])
+                components["device_id"] = gr.Textbox(
+                    label="Device ID",
+                    value=DEFAULTS["device_id"],
+                    info="Use 0,1 for dual-GPU folder/ZIP batches; images are split evenly across both GPUs. Single image uses the first ID.",
+                )
             with gr.Accordion("Optimizations", open=False):
                 with gr.Row():
                     components["allow_tf32"] = gr.Checkbox(label="Allow TF32 on CUDA", value=DEFAULTS["allow_tf32"])

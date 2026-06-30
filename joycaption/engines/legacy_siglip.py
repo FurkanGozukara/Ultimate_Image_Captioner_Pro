@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import queue
 import threading
 import time
@@ -38,6 +39,7 @@ from ..common import (
     CaptionResult,
     OUTPUTS_DIR,
     apply_torch_optimizations,
+    batch_progress_line,
     clean_legacy_caption,
     coerce_image_path,
     copy_image_if_needed,
@@ -54,6 +56,7 @@ from ..common import (
     reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
+    split_round_robin,
     throttle_status,
     optimization_status_text,
     vram_usage_text,
@@ -334,6 +337,26 @@ def _embed_tokens(model: Any):
     raise RuntimeError("Could not locate token embedding layer on the text model.")
 
 
+def _decode_generated_rows(
+    tokenizer: Any,
+    token_rows: torch.Tensor,
+    *,
+    skip_special_tokens: bool,
+    strip_token_ids: Sequence[int | None] = (),
+    strip_last: bool = False,
+) -> list[str]:
+    strip_ids = {int(token_id) for token_id in strip_token_ids if token_id is not None and int(token_id) >= 0}
+    captions: list[str] = []
+    for row in token_rows:
+        tokens = row
+        if tokens.shape[0] > 0 and strip_last:
+            tokens = tokens[:-1]
+        elif tokens.shape[0] > 0 and strip_ids and int(tokens[-1].item()) in strip_ids:
+            tokens = tokens[:-1]
+        captions.append(tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens, clean_up_tokenization_spaces=False))
+    return captions
+
+
 class LegacySiglipEngine:
     def __init__(self, config: LegacyVariantConfig):
         self.config = config
@@ -485,6 +508,8 @@ class LegacySiglipEngine:
             tokenizer = AutoTokenizer.from_pretrained(self._tokenizer_source(), use_fast=False)
             if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
                 tokenizer.pad_token = tokenizer.eos_token
+            if hasattr(tokenizer, "padding_side"):
+                tokenizer.padding_side = "left"
             text_model = self._load_text_model(device, dtype, use_4bit, low_cpu_mem_usage, backend)
             _normalize_generation_config(text_model, tokenizer)
             clip_model = self._load_clip_model(device)
@@ -757,6 +782,233 @@ class LegacySiglipEngine:
         log_event(f"Alpha 2: generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
         return prompt_text, self._postprocess(caption, settings)
 
+    @torch.inference_mode()
+    def _generate_pre_alpha_batch(self, images: Sequence[Image.Image], settings: dict[str, Any], bundle: LegacyModelBundle) -> tuple[str, list[str]]:
+        log_event(f"Pre-Alpha: preprocessing true batch of {len(images)} image(s).", self.config.title)
+        device = bundle.device
+        prompt_text = (settings.get("custom_prompt") or self.config.default_prompt).strip() or self.config.default_prompt
+        pixel_values = bundle.processor(images=list(images), return_tensors="pt").pixel_values.to(device)
+        batch_count = int(pixel_values.shape[0])
+        prompt = bundle.tokenizer.encode(
+            prompt_text,
+            return_tensors="pt",
+            padding=bool(settings.get("padding", False)),
+            truncation=bool(settings.get("truncation", False)),
+            add_special_tokens=bool(settings.get("add_special_tokens", False)),
+        ).to(device)
+        autocast_enabled = device.startswith("cuda")
+        with torch.amp.autocast(device_type="cuda", enabled=autocast_enabled):
+            vision_outputs = bundle.clip_model(pixel_values=pixel_values, output_hidden_states=True)
+            image_features = vision_outputs.hidden_states[-2]
+            embedded_images = bundle.image_adapter(image_features)
+        embeds = _embed_tokens(bundle.text_model)
+        prompt_embeds = embeds(prompt)
+        bos = torch.full((batch_count, 1), int(bundle.tokenizer.bos_token_id), device=device, dtype=torch.int64)
+        embedded_bos = embeds(bos)
+        inputs_embeds = torch.cat(
+            [
+                embedded_bos,
+                embedded_images.to(dtype=embedded_bos.dtype),
+                prompt_embeds.expand(batch_count, -1, -1),
+            ],
+            dim=1,
+        )
+        input_ids = torch.cat(
+            [
+                bos,
+                torch.zeros((batch_count, embedded_images.shape[1]), dtype=torch.long, device=device),
+                prompt.expand(batch_count, -1),
+            ],
+            dim=1,
+        )
+        do_sample = bool(settings.get("do_sample", False))
+        generation_kwargs: dict[str, Any] = {
+            "max_new_tokens": int(settings.get("max_new_tokens", 300)),
+            "do_sample": do_sample,
+            "suppress_tokens": None,
+            **_pad_generation_kwargs(bundle.tokenizer),
+        }
+        if do_sample:
+            generation_kwargs["top_k"] = int(settings.get("top_k", 10))
+            generation_kwargs["temperature"] = max(float(settings.get("temperature", 0.5)), 1e-5)
+        log_event(
+            f"Pre-Alpha: generating {batch_count} caption(s) in one batch (max_new_tokens={generation_kwargs['max_new_tokens']}).",
+            self.config.title,
+        )
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                **generation_kwargs,
+            )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
+        generated_rows = generate_ids[:, input_ids.shape[1] :]
+        generated_token_count = max(0, int(generated_rows.numel()))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
+        captions = _decode_generated_rows(
+            bundle.tokenizer,
+            generated_rows,
+            skip_special_tokens=True,
+            strip_token_ids=[bundle.tokenizer.eos_token_id],
+        )
+        log_event(f"Pre-Alpha: batch generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
+        return prompt_text, [self._postprocess(caption, settings) for caption in captions]
+
+    @torch.inference_mode()
+    def _generate_alpha_one_batch(self, images: Sequence[Image.Image], settings: dict[str, Any], bundle: LegacyModelBundle) -> tuple[str, list[str]]:
+        prompt_text = self.build_alpha_one_prompt(
+            str(settings.get("caption_type", "descriptive")),
+            str(settings.get("caption_tone", "formal")),
+            settings.get("caption_length", "any"),
+            str(settings.get("custom_prompt", "")),
+        )
+        device = bundle.device
+        pixel_values = bundle.processor(images=list(images), return_tensors="pt").pixel_values.to(device)
+        batch_count = int(pixel_values.shape[0])
+        prompt = bundle.tokenizer.encode(prompt_text, return_tensors="pt", padding=False, truncation=False, add_special_tokens=False).to(device)
+        with torch.amp.autocast(device_type="cuda", enabled=device.startswith("cuda")):
+            vision_outputs = bundle.clip_model(pixel_values=pixel_values, output_hidden_states=True)
+            embedded_images = bundle.image_adapter(vision_outputs.hidden_states)
+        embeds = _embed_tokens(bundle.text_model)
+        prompt_embeds = embeds(prompt)
+        bos = torch.full((batch_count, 1), int(bundle.tokenizer.bos_token_id), device=device, dtype=torch.int64)
+        embedded_bos = embeds(bos)
+        eot_id = bundle.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        if not isinstance(eot_id, int) or eot_id < 0:
+            eot_id = bundle.tokenizer.eos_token_id
+        eot_embed = bundle.image_adapter.get_eot_embedding().unsqueeze(0).to(dtype=embedded_bos.dtype, device=device)
+        eot_tokens = torch.full((batch_count, 1), int(eot_id), dtype=torch.long, device=device)
+        inputs_embeds = torch.cat(
+            [
+                embedded_bos,
+                embedded_images.to(dtype=embedded_bos.dtype),
+                prompt_embeds.expand(batch_count, -1, -1),
+                eot_embed.expand(batch_count, -1, -1),
+            ],
+            dim=1,
+        )
+        input_ids = torch.cat(
+            [
+                bos,
+                torch.zeros((batch_count, embedded_images.shape[1]), dtype=torch.long, device=device),
+                prompt.expand(batch_count, -1),
+                eot_tokens,
+            ],
+            dim=1,
+        )
+        log_event(
+            f"Alpha 1: generating {batch_count} caption(s) in one batch (max_new_tokens={int(settings.get('max_new_tokens', 300))}).",
+            self.config.title,
+        )
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                max_new_tokens=int(settings.get("max_new_tokens", 300)),
+                do_sample=True,
+                suppress_tokens=None,
+                **_pad_generation_kwargs(bundle.tokenizer),
+            )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
+        generated_rows = generate_ids[:, input_ids.shape[1] :]
+        generated_token_count = max(0, int(generated_rows.numel()))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
+        captions = _decode_generated_rows(bundle.tokenizer, generated_rows, skip_special_tokens=False, strip_last=True)
+        log_event(f"Alpha 1: batch generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
+        return prompt_text, [self._postprocess(caption, settings) for caption in captions]
+
+    @torch.inference_mode()
+    def _generate_alpha_two_batch(self, images: Sequence[Image.Image], settings: dict[str, Any], bundle: LegacyModelBundle) -> tuple[str, list[str]]:
+        prompt_text = self.build_alpha_two_prompt(
+            str(settings.get("caption_type", "Descriptive")),
+            settings.get("caption_length", "long"),
+            settings.get("extra_options") or [],
+            str(settings.get("name_input", "")),
+            str(settings.get("custom_prompt", "")),
+        )
+        device = bundle.device
+        pixel_values = torch.stack(
+            [
+                TVF.normalize(TVF.pil_to_tensor(image.resize((384, 384), Image.Resampling.LANCZOS)) / 255.0, [0.5], [0.5])
+                for image in images
+            ]
+        ).to(device)
+        batch_count = int(pixel_values.shape[0])
+        with torch.amp.autocast(device_type="cuda", enabled=device.startswith("cuda")):
+            vision_outputs = bundle.clip_model(pixel_values=pixel_values, output_hidden_states=True)
+            embedded_images = bundle.image_adapter(vision_outputs.hidden_states)
+        convo = [
+            {"role": "system", "content": "You are a helpful image captioner."},
+            {"role": "user", "content": prompt_text},
+        ]
+        if hasattr(bundle.tokenizer, "apply_chat_template"):
+            convo_string = bundle.tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
+        else:
+            convo_string = prompt_text
+        convo_tokens = bundle.tokenizer.encode(convo_string, return_tensors="pt", add_special_tokens=False, truncation=False).squeeze(0).to(device)
+        prompt_tokens = bundle.tokenizer.encode(prompt_text, return_tensors="pt", add_special_tokens=False, truncation=False).squeeze(0).to(device)
+        eot_id = bundle.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        eot_indices = (convo_tokens == eot_id).nonzero(as_tuple=True)[0].tolist() if isinstance(eot_id, int) else []
+        preamble_len = eot_indices[1] - prompt_tokens.shape[0] if len(eot_indices) >= 2 else max(convo_tokens.shape[0] - prompt_tokens.shape[0], 0)
+        embeds = _embed_tokens(bundle.text_model)
+        convo_embeds = embeds(convo_tokens.unsqueeze(0))
+        input_embeds = torch.cat(
+            [
+                convo_embeds[:, :preamble_len].expand(batch_count, -1, -1),
+                embedded_images.to(dtype=convo_embeds.dtype),
+                convo_embeds[:, preamble_len:].expand(batch_count, -1, -1),
+            ],
+            dim=1,
+        ).to(device)
+        input_ids = torch.cat(
+            [
+                convo_tokens[:preamble_len].unsqueeze(0).expand(batch_count, -1),
+                torch.zeros((batch_count, embedded_images.shape[1]), dtype=torch.long, device=device),
+                convo_tokens[preamble_len:].unsqueeze(0).expand(batch_count, -1),
+            ],
+            dim=1,
+        )
+        log_event(
+            f"Alpha 2: generating {batch_count} caption(s) in one batch (max_new_tokens={int(settings.get('max_new_tokens', 300))}).",
+            self.config.title,
+        )
+        self._record_generation_stats(device, 0, 0.0)
+        _synchronize_if_cuda(device)
+        generation_started = time.time()
+        with attention_runtime_context(settings):
+            generate_ids = bundle.text_model.generate(
+                input_ids,
+                inputs_embeds=input_embeds,
+                attention_mask=torch.ones_like(input_ids),
+                max_new_tokens=int(settings.get("max_new_tokens", 300)),
+                do_sample=True,
+                suppress_tokens=None,
+                **_pad_generation_kwargs(bundle.tokenizer),
+            )
+        _synchronize_if_cuda(device)
+        generation_elapsed = max(time.time() - generation_started, 1e-9)
+        generated_rows = generate_ids[:, input_ids.shape[1] :]
+        generated_token_count = max(0, int(generated_rows.numel()))
+        stats = self._record_generation_stats(device, generated_token_count, generation_elapsed)
+        captions = _decode_generated_rows(
+            bundle.tokenizer,
+            generated_rows,
+            skip_special_tokens=False,
+            strip_token_ids=[bundle.tokenizer.eos_token_id, eot_id if isinstance(eot_id, int) else None],
+        )
+        log_event(f"Alpha 2: batch generation complete. Token speed: {_generation_stats_text(stats)}.", self.config.title)
+        return prompt_text, [self._postprocess(caption, settings) for caption in captions]
+
     def _postprocess(self, caption: str, settings: dict[str, Any]) -> str:
         caption = clean_legacy_caption(caption.strip(), aggressive=self.config.clean_aggressive)
         if settings.get("cut_off_sentence", True):
@@ -767,8 +1019,10 @@ class LegacySiglipEngine:
             caption = " ".join(caption.split())
         return caption.strip()
 
-    def generate(self, image: Image.Image, settings: dict[str, Any], device_id: int | str | None = None) -> tuple[str, str]:
-        log_event("Caption request received.", self.config.title)
+    def generate_batch(self, images: Sequence[Image.Image], settings: dict[str, Any], device_id: int | str | None = None) -> tuple[str, list[str]]:
+        if not images:
+            return "", []
+        log_event(f"Caption batch request received ({len(images)} image(s)).", self.config.title)
         apply_torch_optimizations(settings, "before")
         selected_device = device_id if device_id is not None else first_device(settings.get("device_id", "0"), allow_cpu=True)
         bundle = self._bundle(
@@ -779,18 +1033,22 @@ class LegacySiglipEngine:
             attention_backend=str(settings.get("attention_backend") or ("sdpa" if settings.get("use_sdpa_attention", False) else "auto")),
         )
         if self.config.mode == "pre_alpha":
-            result = self._generate_pre_alpha(image, settings, bundle)
-            log_event("Caption request finished.", self.config.title)
+            result = self._generate_pre_alpha_batch(images, settings, bundle)
+            log_event("Caption batch request finished.", self.config.title)
             return result
         if self.config.mode == "alpha_one":
-            result = self._generate_alpha_one(image, settings, bundle)
-            log_event("Caption request finished.", self.config.title)
+            result = self._generate_alpha_one_batch(images, settings, bundle)
+            log_event("Caption batch request finished.", self.config.title)
             return result
         if self.config.mode == "alpha_two":
-            result = self._generate_alpha_two(image, settings, bundle)
-            log_event("Caption request finished.", self.config.title)
+            result = self._generate_alpha_two_batch(images, settings, bundle)
+            log_event("Caption batch request finished.", self.config.title)
             return result
         raise ValueError(f"Unknown legacy engine mode: {self.config.mode}")
+
+    def generate(self, image: Image.Image, settings: dict[str, Any], device_id: int | str | None = None) -> tuple[str, str]:
+        prompt, captions = self.generate_batch([image], settings, device_id=device_id)
+        return prompt, captions[0] if captions else ""
 
     def caption_single(self, image_input: Any, settings: dict[str, Any]) -> CaptionResult:
         log_event("Single image caption started.", self.config.title)
@@ -895,6 +1153,7 @@ class LegacySiglipEngine:
         output_folder_text = str(settings.get("output_folder", "")).strip()
         output_folder = Path(output_folder_text) if output_folder_text else input_folder
         include_subfolders = bool(settings.get("process_subfolders", True))
+        skip_existing = bool(settings.get("skip_existing", True))
         overwrite = bool(settings.get("overwrite", False))
         append = bool(settings.get("append", False))
         preserve_subfolders = include_subfolders
@@ -907,9 +1166,11 @@ class LegacySiglipEngine:
 
         all_images = discover_images(input_folder, include_subfolders=include_subfolders)
         images: list[Path] = []
+        skipped_initial = 0
         for image_path in all_images:
             _, caption_path = self._caption_path_for_batch(image_path, input_folder, output_folder, preserve_subfolders)
-            if caption_path.exists() and not overwrite:
+            if caption_path.exists() and skip_existing and not overwrite and not append:
+                skipped_initial += 1
                 continue
             images.append(image_path)
 
@@ -921,71 +1182,278 @@ class LegacySiglipEngine:
         devices = parse_device_ids(settings.get("gpu_ids") or settings.get("device_id") or "0", allow_cpu=True)
         reset_vram_peak_stats(devices)
         batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        batch_size = max(1, int(settings.get("batch_size", 1) or 1))
         progress_text = (
             f"Starting {self.config.title} folder batch.\n"
             f"Input: {input_folder}\n"
             f"Output: {output_folder}\n"
             f"Images queued: {len(images)} of {len(all_images)} found\n"
+            f"Skipped existing: {skipped_initial}\n"
             f"Devices: {', '.join(str(d) for d in devices)}\n"
+            f"Batch size per device: {batch_size}\n"
         )
         log_event(f"Folder batch started: {len(images)} queued on {len(devices)} device(s).", self.config.title)
         yield progress_text
 
-        chunks = [images[idx:: len(devices)] for idx in range(len(devices))]
+        chunks = split_round_robin(images, devices)
         aggregate_lock = threading.Lock()
+        aggregate = {"processed": 0, "skipped": skipped_initial, "failed": 0}
         total_generated_tokens = 0
         total_generation_seconds = 0.0
+        started_all = time.time()
+        total_found = len(all_images)
+        process_chunks = [
+            (device_id, chunk)
+            for device_id, chunk in zip(devices, chunks)
+            if chunk
+        ]
+
+        if len(process_chunks) > 1:
+            ctx = mp.get_context("spawn")
+            process_queue: Any = ctx.Queue()
+            processes: list[mp.Process] = []
+            chunk_sizes: dict[str, int] = {}
+            done_devices: set[str] = set()
+            for device_id, chunk in process_chunks:
+                chunk_sizes[str(device_id)] = len(chunk)
+                process = ctx.Process(
+                    target=_legacy_folder_process_worker,
+                    args=(
+                        process_queue,
+                        self.config.key,
+                        [str(path) for path in chunk],
+                        str(input_folder),
+                        str(output_folder),
+                        preserve_subfolders,
+                        dict(settings),
+                        device_id,
+                    ),
+                    daemon=False,
+                )
+                processes.append(process)
+                log_event(f"Starting process worker for device {device_id}: {len(chunk)} image(s).", self.config.title)
+                process.start()
+
+            try:
+                done_count = 0
+                while done_count < len(processes):
+                    if self.stop_flag.value:
+                        for process in processes:
+                            if process.is_alive():
+                                process.terminate()
+                        yield throttle_status("Batch processing stopped. Child GPU processes were terminated.", progress_text)
+                        break
+                    try:
+                        event = process_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        if not any(process.is_alive() for process in processes):
+                            break
+                        continue
+
+                    kind = str(event.get("kind") or "")
+                    device_id = event.get("device_id")
+                    if kind == "progress":
+                        with aggregate_lock:
+                            aggregate["processed"] += int(event.get("processed_delta", 0) or 0)
+                            aggregate["skipped"] += int(event.get("skipped_delta", 0) or 0)
+                            aggregate["failed"] += int(event.get("failed_delta", 0) or 0)
+                            total_generated_tokens += int(event.get("generated_tokens", 0) or 0)
+                            total_generation_seconds += float(event.get("generation_seconds", 0.0) or 0.0)
+                            token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                            line = batch_progress_line(
+                                processed=aggregate["processed"],
+                                total=total_found,
+                                skipped=aggregate["skipped"],
+                                failed=aggregate["failed"],
+                                started=started_all,
+                                last_batch_count=int(event.get("last_batch_count", 0) or 0),
+                                last_batch_seconds=float(event.get("last_batch_seconds", 0.0) or 0.0),
+                                token_speed=token_speed,
+                                device_id=device_id,
+                                worker_processed=int(event.get("local_processed", 0) or 0),
+                                worker_total=int(event.get("worker_total", 0) or 0),
+                                worker_skipped=int(event.get("local_skipped", 0) or 0),
+                                worker_failed=int(event.get("local_failed", 0) or 0),
+                            )
+                        if event.get("message"):
+                            line = f"{line} {event['message']}"
+                        log_event(line, self.config.title)
+                        progress_text = throttle_status(line, progress_text)
+                        yield progress_text
+                    elif kind == "done":
+                        key = str(device_id)
+                        if key not in done_devices:
+                            done_devices.add(key)
+                            done_count += 1
+                        line = (
+                            f"Device {device_id}: process complete with "
+                            f"{int(event.get('local_processed', 0) or 0)} processed, "
+                            f"{int(event.get('local_skipped', 0) or 0)} skipped, "
+                            f"{int(event.get('local_failed', 0) or 0)} failed."
+                        )
+                        log_event(line, self.config.title)
+                        progress_text = throttle_status(line, progress_text)
+                        yield progress_text
+                    elif kind == "fatal":
+                        key = str(device_id)
+                        if key not in done_devices:
+                            done_devices.add(key)
+                            done_count += 1
+                            with aggregate_lock:
+                                aggregate["failed"] += chunk_sizes.get(key, 0)
+                        line = f"Device {device_id}: process failed: {event.get('error') or 'unknown error'}"
+                        log_event(line, self.config.title)
+                        progress_text = throttle_status(line, progress_text)
+                        yield progress_text
+
+                for process in processes:
+                    process.join(timeout=5.0)
+                for device_id, process in zip([device for device, _chunk in process_chunks], processes):
+                    key = str(device_id)
+                    if process.exitcode not in (0, None) and key not in done_devices:
+                        with aggregate_lock:
+                            aggregate["failed"] += chunk_sizes.get(key, 0)
+                        line = f"Device {device_id}: process exited with code {process.exitcode}."
+                        log_event(line, self.config.title)
+                        progress_text = throttle_status(line, progress_text)
+                        yield progress_text
+            finally:
+                for process in processes:
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=2.0)
+
+            final = "Batch processing stopped." if self.stop_flag.value else "Batch processing complete."
+            with aggregate_lock:
+                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+                final_line = (
+                    f"{final} Processed {aggregate['processed']}/{total_found}, "
+                    f"{aggregate['skipped']} skipped, {aggregate['failed']} failed.\n"
+                    f"Token speed: {token_detail}"
+                )
+            yield throttle_status(final_line, progress_text)
+            return
 
         def worker(device_id: int | str, chunk: list[Path]) -> None:
             nonlocal total_generated_tokens, total_generation_seconds
             log_event(f"Batch worker started on device {device_id}: {len(chunk)} image(s).", self.config.title)
-            processed = 0
-            failed = 0
-            skipped = 0
-            for idx, image_path in enumerate(chunk, start=1):
+            local_processed = 0
+            local_failed = 0
+            local_skipped = 0
+            for offset in range(0, len(chunk), batch_size):
                 if self.stop_flag.value:
                     batch_queue.put(("progress", f"Device {device_id}: stop requested."))
                     break
-                output_image_path, caption_path = self._caption_path_for_batch(image_path, input_folder, output_folder, preserve_subfolders)
-                if caption_path.exists() and not overwrite:
-                    skipped += 1
+                batch_paths = chunk[offset : offset + batch_size]
+                work_items: list[tuple[Path, Path, Path]] = []
+                with aggregate_lock:
+                    for image_path in batch_paths:
+                        output_image_path, caption_path = self._caption_path_for_batch(image_path, input_folder, output_folder, preserve_subfolders)
+                        if caption_path.exists() and skip_existing and not overwrite and not append:
+                            aggregate["skipped"] += 1
+                            local_skipped += 1
+                            continue
+                        work_items.append((image_path, output_image_path, caption_path))
+                if not work_items:
+                    with aggregate_lock:
+                        line = batch_progress_line(
+                            processed=aggregate["processed"],
+                            total=total_found,
+                            skipped=aggregate["skipped"],
+                            failed=aggregate["failed"],
+                            started=started_all,
+                            last_batch_count=0,
+                            last_batch_seconds=0.0,
+                            token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                            device_id=device_id if len(devices) > 1 else None,
+                            worker_processed=local_processed,
+                            worker_total=len(chunk),
+                            worker_skipped=local_skipped,
+                            worker_failed=local_failed,
+                        )
+                    batch_queue.put(("progress", line))
                     continue
                 try:
-                    started = time.time()
-                    log_event(f"Device {device_id}: captioning {image_path.name} ({idx}/{len(chunk)}).", self.config.title)
-                    image = load_rgb_image(image_path, int(settings.get("max_resolution", 1536) or 1536))
-                    _prompt, caption = self.generate(image, settings, device_id=device_id)
+                    batch_started = time.time()
+                    names = ", ".join(path.name for path, _, _ in work_items[:3])
+                    if len(work_items) > 3:
+                        names += ", ..."
+                    log_event(
+                        f"Device {device_id}: captioning true batch {offset + 1}-{offset + len(work_items)} of {len(chunk)} ({names}).",
+                        self.config.title,
+                    )
+                    loaded_images = [
+                        load_rgb_image(image_path, int(settings.get("max_resolution", 1536) or 1536))
+                        for image_path, _, _ in work_items
+                    ]
+                    _prompt, captions = self.generate_batch(loaded_images, settings, device_id=device_id)
                     stats = self._generation_stats_for_device(device_id)
+                    batch_elapsed = max(time.time() - batch_started, 1e-9)
                     with aggregate_lock:
                         total_generated_tokens += stats.generated_tokens
                         total_generation_seconds += stats.elapsed_seconds
                         token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
-                    actual_caption = save_caption_file(
-                        caption_path,
-                        caption,
-                        overwrite=overwrite,
-                        append=append,
-                        remove_newlines=bool(settings.get("remove_newlines", True)),
-                        prefix=str(settings.get("prefix", "")),
-                        suffix=str(settings.get("suffix", "")),
-                        replace_pairs=settings.get("replace_pairs"),
-                        replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
-                        replace_single_word=bool(settings.get("replace_single_word", False)),
-                    )
-                    copy_image_if_needed(image_path, output_image_path, self._should_save_image(settings))
-                    processed += 1 if actual_caption else 0
-                    elapsed = time.time() - started
-                    log_event(f"Device {device_id}: saved {actual_caption} in {elapsed:.2f}s.", self.config.title)
-                    batch_queue.put(
-                        (
-                            "progress",
-                            f"Device {device_id}: {processed}/{len(chunk)} processed, {skipped} skipped, {failed} failed. Last {image_path.name} in {elapsed:.2f}s. Token speed {token_speed:.2f} tok/s.",
+                        saved_count = 0
+                        for (image_path, output_image_path, caption_path), caption in zip(work_items, captions):
+                            actual_caption = save_caption_file(
+                                caption_path,
+                                caption,
+                                overwrite=overwrite,
+                                append=append,
+                                remove_newlines=bool(settings.get("remove_newlines", True)),
+                                prefix=str(settings.get("prefix", "")),
+                                suffix=str(settings.get("suffix", "")),
+                                replace_pairs=settings.get("replace_pairs"),
+                                replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+                                replace_single_word=bool(settings.get("replace_single_word", False)),
+                            )
+                            copy_image_if_needed(image_path, output_image_path, self._should_save_image(settings))
+                            if actual_caption:
+                                aggregate["processed"] += 1
+                                local_processed += 1
+                                saved_count += 1
+                                log_event(f"Device {device_id}: saved {actual_caption}.", self.config.title)
+                            else:
+                                aggregate["skipped"] += 1
+                                local_skipped += 1
+                        line = batch_progress_line(
+                            processed=aggregate["processed"],
+                            total=total_found,
+                            skipped=aggregate["skipped"],
+                            failed=aggregate["failed"],
+                            started=started_all,
+                            last_batch_count=saved_count,
+                            last_batch_seconds=batch_elapsed,
+                            token_speed=token_speed,
+                            device_id=device_id if len(devices) > 1 else None,
+                            worker_processed=local_processed,
+                            worker_total=len(chunk),
+                            worker_skipped=local_skipped,
+                            worker_failed=local_failed,
                         )
-                    )
                 except Exception as exc:
-                    failed += 1
-                    batch_queue.put(("progress", f"Device {device_id}: failed {image_path.name}: {format_exception(exc)}"))
-            batch_queue.put(("done", f"Device {device_id}: complete with {processed} processed, {skipped} skipped, {failed} failed."))
+                    with aggregate_lock:
+                        aggregate["failed"] += len(work_items)
+                        local_failed += len(work_items)
+                        line = batch_progress_line(
+                            processed=aggregate["processed"],
+                            total=total_found,
+                            skipped=aggregate["skipped"],
+                            failed=aggregate["failed"],
+                            started=started_all,
+                            last_batch_count=0,
+                            last_batch_seconds=0.0,
+                            token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                            device_id=device_id if len(devices) > 1 else None,
+                            worker_processed=local_processed,
+                            worker_total=len(chunk),
+                            worker_skipped=local_skipped,
+                            worker_failed=local_failed,
+                        )
+                    line = f"{line} Failed batch: {format_exception(exc)}"
+                batch_queue.put(("progress", line))
+            batch_queue.put(("done", f"Device {device_id}: complete with {local_processed} processed, {local_skipped} skipped, {local_failed} failed."))
 
         threads = [
             threading.Thread(target=worker, args=(device_id, chunk), daemon=True)
@@ -1003,6 +1471,7 @@ class LegacySiglipEngine:
                 if not any(thread.is_alive() for thread in threads):
                     break
                 continue
+            log_event(line, self.config.title)
             progress_text = throttle_status(line, progress_text)
             if kind == "done":
                 done_count += 1
@@ -1014,7 +1483,180 @@ class LegacySiglipEngine:
         with aggregate_lock:
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
             token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
-        yield throttle_status(f"{final}\nToken speed: {token_detail}", progress_text)
+            final_line = (
+                f"{final} Processed {aggregate['processed']}/{total_found}, "
+                f"{aggregate['skipped']} skipped, {aggregate['failed']} failed.\n"
+                f"Token speed: {token_detail}"
+            )
+        yield throttle_status(final_line, progress_text)
+
+
+def _legacy_engine_for_key(variant: str, base_dir: Path) -> LegacySiglipEngine:
+    if variant == "pre_alpha":
+        return create_pre_alpha_engine(base_dir)
+    if variant == "alpha_one":
+        return create_alpha_one_engine(base_dir)
+    if variant == "alpha_two":
+        return create_alpha_two_engine(base_dir)
+    raise ValueError(f"Unknown legacy variant: {variant}")
+
+
+def _legacy_folder_process_worker(
+    event_queue: Any,
+    variant: str,
+    path_texts: list[str],
+    input_folder_text: str,
+    output_folder_text: str,
+    preserve_subfolders: bool,
+    settings: dict[str, Any],
+    device_id: int | str,
+) -> None:
+    engine = _legacy_engine_for_key(variant, OUTPUTS_DIR.parent)
+    paths = [Path(path) for path in path_texts]
+    input_folder = Path(input_folder_text)
+    output_folder = Path(output_folder_text)
+    settings = dict(settings)
+    settings["gpu_ids"] = str(device_id)
+    settings["device_id"] = str(device_id)
+    settings["use_subprocess"] = False
+    overwrite = bool(settings.get("overwrite", False))
+    append = bool(settings.get("append", False))
+    skip_existing = bool(settings.get("skip_existing", True))
+    batch_size = max(1, int(settings.get("batch_size", 1) or 1))
+    max_resolution = int(settings.get("max_resolution", 1536) or 1536)
+    local_processed = 0
+    local_skipped = 0
+    local_failed = 0
+    try:
+        log_event(f"Device {device_id}: process worker started with {len(paths)} image(s).", engine.config.title)
+        for offset in range(0, len(paths), batch_size):
+            batch_paths = paths[offset : offset + batch_size]
+            work_items: list[tuple[Path, Path, Path]] = []
+            for image_path in batch_paths:
+                output_image_path, caption_path = engine._caption_path_for_batch(
+                    image_path,
+                    input_folder,
+                    output_folder,
+                    preserve_subfolders,
+                )
+                if caption_path.exists() and skip_existing and not overwrite and not append:
+                    local_skipped += 1
+                    continue
+                work_items.append((image_path, output_image_path, caption_path))
+
+            if not work_items:
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": device_id,
+                        "processed_delta": 0,
+                        "skipped_delta": len(batch_paths),
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                    }
+                )
+                continue
+
+            try:
+                names = ", ".join(path.name for path, _, _ in work_items[:3])
+                if len(work_items) > 3:
+                    names += ", ..."
+                log_event(
+                    f"Device {device_id}: process captioning true batch {offset + 1}-{offset + len(work_items)} of {len(paths)} ({names}).",
+                    engine.config.title,
+                )
+                batch_started = time.time()
+                loaded_images = [load_rgb_image(image_path, max_resolution) for image_path, _, _ in work_items]
+                _prompt, captions = engine.generate_batch(loaded_images, settings, device_id=device_id)
+                stats = engine._generation_stats_for_device(device_id)
+                batch_elapsed = max(time.time() - batch_started, 1e-9)
+                saved_count = 0
+                skipped_count = 0
+                for (image_path, output_image_path, caption_path), caption in zip(work_items, captions):
+                    actual_caption = save_caption_file(
+                        caption_path,
+                        caption,
+                        overwrite=overwrite,
+                        append=append,
+                        remove_newlines=bool(settings.get("remove_newlines", True)),
+                        prefix=str(settings.get("prefix", "")),
+                        suffix=str(settings.get("suffix", "")),
+                        replace_pairs=settings.get("replace_pairs"),
+                        replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
+                        replace_single_word=bool(settings.get("replace_single_word", False)),
+                    )
+                    copy_image_if_needed(image_path, output_image_path, engine._should_save_image(settings))
+                    if actual_caption:
+                        saved_count += 1
+                        local_processed += 1
+                        log_event(f"Device {device_id}: process saved {actual_caption}.", engine.config.title)
+                    else:
+                        skipped_count += 1
+                        local_skipped += 1
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": device_id,
+                        "processed_delta": saved_count,
+                        "skipped_delta": skipped_count,
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": saved_count,
+                        "last_batch_seconds": batch_elapsed,
+                        "generated_tokens": stats.generated_tokens,
+                        "generation_seconds": stats.elapsed_seconds,
+                    }
+                )
+            except Exception as exc:
+                failed_count = len(work_items)
+                local_failed += failed_count
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": device_id,
+                        "processed_delta": 0,
+                        "skipped_delta": 0,
+                        "failed_delta": failed_count,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                        "message": f"Failed batch: {format_exception(exc)}",
+                    }
+                )
+        event_queue.put(
+            {
+                "kind": "done",
+                "device_id": device_id,
+                "local_processed": local_processed,
+                "local_skipped": local_skipped,
+                "local_failed": local_failed,
+            }
+        )
+    except Exception as exc:
+        event_queue.put({"kind": "fatal", "device_id": device_id, "error": format_exception(exc)})
+    finally:
+        try:
+            engine._bundles.clear()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def create_pre_alpha_engine(base_dir: Path) -> LegacySiglipEngine:
@@ -1024,7 +1666,7 @@ def create_pre_alpha_engine(base_dir: Path) -> LegacySiglipEngine:
             title="Joy Caption Pre Alpha",
             checkpoint_dir=base_dir / "model_files_pre_alpha",
             mode="pre_alpha",
-            default_dtype=torch.float16,
+            default_dtype=torch.bfloat16,
             clean_aggressive=False,
         )
     )
@@ -1050,7 +1692,7 @@ def create_alpha_two_engine(base_dir: Path) -> LegacySiglipEngine:
             title="Joy Caption Alpha 2",
             checkpoint_dir=base_dir / "model_files_alpha_two",
             mode="alpha_two",
-            default_dtype=torch.float16,
+            default_dtype=torch.bfloat16,
             clean_aggressive=False,
         )
     )

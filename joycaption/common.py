@@ -491,6 +491,73 @@ def throttle_status(line: str, progress: str, max_chars: int = 12000) -> str:
     return combined[-max_chars:]
 
 
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "unknown"
+    total = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def batch_progress_line(
+    *,
+    processed: int,
+    total: int,
+    skipped: int = 0,
+    failed: int = 0,
+    started: float,
+    last_batch_count: int = 0,
+    last_batch_seconds: float = 0.0,
+    token_speed: float | None = None,
+    device_id: int | str | None = None,
+    worker_processed: int | None = None,
+    worker_total: int | None = None,
+    worker_skipped: int = 0,
+    worker_failed: int = 0,
+) -> str:
+    elapsed = max(time.time() - started, 1e-9)
+    completed = max(0, int(processed) + int(failed))
+    remaining = max(0, int(total) - int(skipped) - completed)
+    eta = (elapsed / completed) * remaining if completed else None
+    overall_img_s = max(0, int(processed)) / elapsed
+    last_count = max(0, int(last_batch_count))
+    last_seconds = max(float(last_batch_seconds), 1e-9)
+    last_img_s = last_count / last_seconds if last_count else 0.0
+    last_s_per_image = last_seconds / last_count if last_count else 0.0
+    token_part = f", token speed {token_speed:.2f} tok/s" if token_speed is not None else ""
+    worker_part = ""
+    if device_id is not None:
+        if worker_processed is not None and worker_total is not None:
+            worker_remaining = max(
+                0,
+                int(worker_total) - int(worker_skipped) - int(worker_processed) - int(worker_failed),
+            )
+            worker_part = (
+                f"Device {device_id}: {worker_processed}/{worker_total} local processed, "
+                f"{worker_skipped} local skipped, {worker_failed} local failed, "
+                f"{worker_remaining} local remaining. "
+            )
+        else:
+            worker_part = f"Device {device_id}: "
+    return (
+        f"{worker_part}"
+        f"Total {processed}/{total} processed, {skipped} skipped, {failed} failed, {remaining} remaining. "
+        f"ETA {format_duration(eta)}. Overall {overall_img_s:.2f} img/s. "
+        f"Last batch {last_count} image(s) in {last_seconds:.2f}s "
+        f"({last_s_per_image:.2f}s/image, {last_img_s:.2f} img/s{token_part})."
+    )
+
+
+def split_round_robin(items: Sequence[Any], workers: Sequence[Any]) -> list[list[Any]]:
+    count = max(1, len(workers))
+    return [list(items[idx::count]) for idx in range(count)]
+
+
 def apply_torch_optimizations(settings: dict[str, Any], when: str = "before") -> list[str]:
     applied: list[str] = []
     try:

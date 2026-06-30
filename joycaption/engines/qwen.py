@@ -3,7 +3,10 @@ from __future__ import annotations
 import gc
 import json
 import math
+import multiprocessing as mp
+import queue
 import tempfile
+import threading
 import time
 import traceback
 import zipfile
@@ -33,6 +36,7 @@ from ..common import (
     IMAGE_EXTENSIONS,
     OUTPUTS_DIR,
     apply_torch_optimizations,
+    batch_progress_line,
     coerce_image_path,
     copy_image_if_needed,
     discover_images,
@@ -47,6 +51,7 @@ from ..common import (
     reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
+    split_round_robin,
     vram_usage_text,
     write_generation_metadata,
 )
@@ -287,6 +292,11 @@ class QwenEngine:
                 trust_remote_code=True,
                 local_files_only=True,
             )
+            tokenizer = getattr(self.state.processor, "tokenizer", None)
+            if tokenizer is not None and getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+                tokenizer.pad_token = tokenizer.eos_token
+            if tokenizer is not None and hasattr(tokenizer, "padding_side"):
+                tokenizer.padding_side = "left"
         return self.state.processor
 
     def _quant_config(self, quant: str) -> BitsAndBytesConfig | None:
@@ -357,10 +367,7 @@ class QwenEngine:
         self.state.optimization_key = optimization_key
         return f"Qwen model ready on {device_map}."
 
-    @torch.inference_mode()
-    def generate_caption(self, image: Image.Image, settings: dict[str, Any]) -> str:
-        if self.state.model is None or self.state.processor is None:
-            raise RuntimeError("Qwen model is not loaded.")
+    def _messages_for(self, image: Image.Image, settings: dict[str, Any]) -> list[dict[str, Any]]:
         system_prompt = str(settings.get("system_prompt") or "").strip()
         prompt = str(settings.get("prompt") or "").strip()
         if not prompt:
@@ -377,46 +384,64 @@ class QwenEngine:
                 ],
             }
         )
+        return messages
+
+    @torch.inference_mode()
+    def generate_captions(self, images: Sequence[Image.Image], settings_list: Sequence[dict[str, Any]]) -> list[str]:
+        if self.state.model is None or self.state.processor is None:
+            raise RuntimeError("Qwen model is not loaded.")
+        if not images:
+            return []
+        if len(images) != len(settings_list):
+            raise ValueError("Qwen batch images and settings lengths do not match.")
         processor = self.state.processor
         model = self.state.model
-        log_event(f"Preparing Qwen inputs (max_new_tokens={int(settings.get('max_new_tokens', 512))}).", SCOPE)
+        first_settings = settings_list[0]
+        max_new_tokens = int(first_settings.get("max_new_tokens", 512) or 512)
+        messages_batch = [self._messages_for(image, settings) for image, settings in zip(images, settings_list)]
+        log_event(f"Preparing Qwen inputs (batch={len(images)}, max_new_tokens={max_new_tokens}).", SCOPE)
         inputs = processor.apply_chat_template(
-            messages,
+            messages_batch,
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
+            processor_kwargs={"padding": True},
         )
         inputs = inputs.to(model.device)
-        temperature = float(settings.get("temperature", 0.1) or 0.0)
+        model_dtype = getattr(model, "dtype", None)
+        if isinstance(model_dtype, torch.dtype):
+            for key, value in list(inputs.items()):
+                if torch.is_tensor(value) and torch.is_floating_point(value):
+                    inputs[key] = value.to(device=model.device, dtype=model_dtype)
+        temperature = float(first_settings.get("temperature", 0.1) or 0.0)
         do_sample = temperature > 0
-        max_new_tokens = int(settings.get("max_new_tokens", 512) or 512)
         generation_kwargs: dict[str, Any] = {
             **inputs,
             "max_new_tokens": max_new_tokens,
             "do_sample": do_sample,
-            "repetition_penalty": float(settings.get("repetition_penalty", 1.0) or 1.0),
+            "repetition_penalty": float(first_settings.get("repetition_penalty", 1.0) or 1.0),
         }
         if do_sample:
             generation_kwargs["temperature"] = max(temperature, 1e-5)
-            generation_kwargs["top_p"] = float(settings.get("top_p", 0.8) or 0.8)
-            generation_kwargs["top_k"] = int(settings.get("top_k", 20) or 20)
-        log_event(f"Generating Qwen caption | do_sample={do_sample}.", SCOPE)
+            generation_kwargs["top_p"] = float(first_settings.get("top_p", 0.8) or 0.8)
+            generation_kwargs["top_k"] = int(first_settings.get("top_k", 20) or 20)
+        log_event(f"Generating {len(images)} Qwen caption(s) in one batch | do_sample={do_sample}.", SCOPE)
         progress = None
-        if bool(settings.get("console_progress", True)):
+        if bool(first_settings.get("console_progress", True)):
             progress = ConsoleProgressStoppingCriteria(SCOPE, int(inputs.input_ids.shape[-1]), max_new_tokens)
             generation_kwargs["stopping_criteria"] = StoppingCriteriaList([progress])
         _synchronize_if_cuda(model.device)
         generation_started = time.time()
         try:
-            with attention_runtime_context(settings):
+            with attention_runtime_context(first_settings):
                 generated_ids = model.generate(**generation_kwargs)
         except Exception:
             if progress is not None:
                 progress.finish(failed=True)
             raise
         _synchronize_if_cuda(model.device)
-        generated_token_count = max(0, int(generated_ids.shape[-1]) - int(inputs.input_ids.shape[-1]))
+        generated_token_count = max(0, int(generated_ids.shape[-1]) - int(inputs.input_ids.shape[-1])) * len(images)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
         self.last_generation_stats = QwenGenerationStats(
             generated_tokens=generated_token_count,
@@ -426,9 +451,15 @@ class QwenEngine:
         if progress is not None:
             progress.finish(generated_token_count)
         log_event(f"Qwen generation speed: {_generation_stats_text(self.last_generation_stats)}.", SCOPE)
-        trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+        prompt_width = int(inputs.input_ids.shape[-1])
+        trimmed = [out_ids[prompt_width:] for out_ids in generated_ids]
         output_text = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-        return str(output_text[0] if output_text else "").strip()
+        return [str(text).strip() for text in output_text]
+
+    @torch.inference_mode()
+    def generate_caption(self, image: Image.Image, settings: dict[str, Any]) -> str:
+        captions = self.generate_captions([image], [settings])
+        return captions[0] if captions else ""
 
     def _finalize_output(
         self,
@@ -602,11 +633,10 @@ class QwenEngine:
         try:
             paths = sorted([_file_path(item) for item in files_list], key=natural_sort_key)
             self.stop_flag.reset()
-            yield html_message("info", "Loading Qwen model..."), None, ""
             devices = parse_device_ids(settings.get("device_id") or "0", allow_cpu=True)
+            yield html_message("info", f"Loading Qwen model(s). Devices: {', '.join(str(device) for device in devices)}."), None, ""
             reset_vram_peak_stats(devices)
             before_vram = vram_usage_text()
-            self.load_model(settings)
             captions: dict[str, str] = {}
             total = len(paths)
             extension = _caption_extension(settings)
@@ -615,35 +645,246 @@ class QwenEngine:
             total_generated_tokens = 0
             total_generation_seconds = 0.0
             boxed_images: dict[str, bytes] = {}
-            for offset in range(0, total, batch_size):
-                if self.stop_flag.value:
-                    yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
-                    return
-                for path in paths[offset : offset + batch_size]:
-                    if self.stop_flag.value:
-                        break
-                    image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
-                    image_settings = _settings_for_image(settings, path, image)
-                    raw = self.generate_caption(image, image_settings)
-                    final, parsed, warnings = self._finalize_output(image, raw, image_settings)
-                    stats = self.last_generation_stats
-                    total_generated_tokens += stats.generated_tokens
-                    total_generation_seconds += stats.elapsed_seconds
-                    if warnings:
-                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
-                    captions[path.with_suffix(extension).name] = final
-                    if bool(settings.get("auto_save_boxed_image", True)):
-                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
-                        if rows:
-                            try:
-                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="yxyx")
-                                if image_bytes:
-                                    boxed_images[f"{path.stem}_boxed.png"] = image_bytes
-                            except Exception as exc:
-                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
-                elapsed = max(time.time() - started, 0.01)
+            aggregate = {"processed": 0, "failed": 0}
+            aggregate_lock = threading.Lock()
+            batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+            chunks = split_round_robin(paths, devices)
+            log_event(f"Qwen ZIP batch started: {total} image(s), batch_size={batch_size}, devices={devices}.", SCOPE)
+            process_chunks = [
+                (worker_device, chunk)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+
+            if len(process_chunks) > 1:
+                ctx = mp.get_context("spawn")
+                process_queue: Any = ctx.Queue()
+                processes: list[mp.Process] = []
+                chunk_sizes: dict[str, int] = {}
+                done_devices: set[str] = set()
+                for worker_device, chunk in process_chunks:
+                    chunk_sizes[str(worker_device)] = len(chunk)
+                    process = ctx.Process(
+                        target=_qwen_zip_process_worker,
+                        args=(
+                            process_queue,
+                            str(self.model_path),
+                            [str(path) for path in chunk],
+                            dict(settings),
+                            worker_device,
+                            extension,
+                            batch_size,
+                        ),
+                        daemon=False,
+                    )
+                    processes.append(process)
+                    log_event(f"Starting Qwen ZIP process worker for device {worker_device}: {len(chunk)} image(s).", SCOPE)
+                    process.start()
+
+                try:
+                    done_count = 0
+                    while done_count < len(processes):
+                        if self.stop_flag.value:
+                            for process in processes:
+                                if process.is_alive():
+                                    process.terminate()
+                            yield html_message("info", f"ZIP batch cancelled. Processed {aggregate['processed']}/{total} images."), None, ""
+                            return
+                        try:
+                            event = process_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            if not any(process.is_alive() for process in processes):
+                                break
+                            continue
+
+                        kind = str(event.get("kind") or "")
+                        worker_device = event.get("device_id")
+                        if kind == "progress":
+                            with aggregate_lock:
+                                aggregate["processed"] += int(event.get("processed_delta", 0) or 0)
+                                aggregate["failed"] += int(event.get("failed_delta", 0) or 0)
+                                total_generated_tokens += int(event.get("generated_tokens", 0) or 0)
+                                total_generation_seconds += float(event.get("generation_seconds", 0.0) or 0.0)
+                                captions.update(event.get("captions") or {})
+                                boxed_images.update(event.get("boxed_images") or {})
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=int(event.get("last_batch_count", 0) or 0),
+                                    last_batch_seconds=float(event.get("last_batch_seconds", 0.0) or 0.0),
+                                    token_speed=token_speed,
+                                    device_id=worker_device,
+                                    worker_processed=int(event.get("local_processed", 0) or 0),
+                                    worker_total=int(event.get("worker_total", 0) or 0),
+                                    worker_failed=int(event.get("local_failed", 0) or 0),
+                                )
+                            if event.get("message"):
+                                line = f"{line} {event['message']}"
+                            log_event(line, SCOPE)
+                            yield html_message("info", line), None, ""
+                        elif kind == "done":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                            line = (
+                                f"Device {worker_device}: ZIP process complete with "
+                                f"{int(event.get('local_processed', 0) or 0)} processed, "
+                                f"{int(event.get('local_failed', 0) or 0)} failed."
+                            )
+                            log_event(line, SCOPE)
+                        elif kind == "fatal":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                                with aggregate_lock:
+                                    aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: ZIP process failed: {event.get('error') or 'unknown error'}"
+                            log_event(line, SCOPE)
+                            yield html_message("error", line), None, ""
+
+                    for process in processes:
+                        process.join(timeout=5.0)
+                    for worker_device, process in zip([device for device, _chunk in process_chunks], processes):
+                        key = str(worker_device)
+                        if process.exitcode not in (0, None) and key not in done_devices:
+                            with aggregate_lock:
+                                aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: ZIP process exited with code {process.exitcode}."
+                            log_event(line, SCOPE)
+                            yield html_message("error", line), None, ""
+                finally:
+                    for process in processes:
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2.0)
+
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+                with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for filename, text in captions.items():
+                        archive.writestr(filename, text)
+                    for filename, image_bytes in boxed_images.items():
+                        archive.writestr(filename, image_bytes)
+                apply_torch_optimizations(settings, "after")
+                after_vram = vram_usage_text()
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
-                yield html_message("info", f"Processed {min(offset + batch_size, total)}/{total} images. Speed {len(captions) / elapsed:.2f} img/s, {token_speed:.2f} tok/s."), None, ""
+                token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+                yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+                return
+
+            def worker(worker_device: int | str, chunk: list[Path]) -> None:
+                nonlocal total_generated_tokens, total_generation_seconds
+                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path)
+                worker_settings = dict(settings)
+                worker_settings["device_id"] = str(worker_device)
+                local_processed = 0
+                local_failed = 0
+                try:
+                    worker_engine.load_model(worker_settings)
+                    for offset in range(0, len(chunk), batch_size):
+                        if self.stop_flag.value:
+                            break
+                        batch_paths = chunk[offset : offset + batch_size]
+                        try:
+                            images = [load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024)) for path in batch_paths]
+                            settings_batch = [_settings_for_image(worker_settings, path, image) for path, image in zip(batch_paths, images)]
+                            log_event(
+                                f"Device {worker_device}: Qwen ZIP true batch {offset + 1}-{offset + len(batch_paths)} of {len(chunk)}.",
+                                SCOPE,
+                            )
+                            batch_started = time.time()
+                            raw_outputs = worker_engine.generate_captions(images, settings_batch)
+                            batch_elapsed = max(time.time() - batch_started, 1e-9)
+                            stats = worker_engine.last_generation_stats
+                            with aggregate_lock:
+                                total_generated_tokens += stats.generated_tokens
+                                total_generation_seconds += stats.elapsed_seconds
+                                for path, image, image_settings, raw in zip(batch_paths, images, settings_batch, raw_outputs):
+                                    final, parsed, warnings = worker_engine._finalize_output(image, raw, image_settings)
+                                    if warnings:
+                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                                    captions[path.with_suffix(extension).name] = final
+                                    if bool(settings.get("auto_save_boxed_image", True)):
+                                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
+                                        if rows:
+                                            try:
+                                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="yxyx")
+                                                if image_bytes:
+                                                    boxed_images[f"{path.stem}_boxed.png"] = image_bytes
+                                            except Exception as exc:
+                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                    aggregate["processed"] += 1
+                                    local_processed += 1
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=len(batch_paths),
+                                    last_batch_seconds=batch_elapsed,
+                                    token_speed=token_speed,
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                        except Exception as exc:
+                            with aggregate_lock:
+                                aggregate["failed"] += len(batch_paths)
+                                local_failed += len(batch_paths)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", f"{line} Failed batch: {format_exception(exc)}"))
+                finally:
+                    if worker_engine is not self:
+                        worker_engine.clear_models()
+                    batch_queue.put(("done", f"Device {worker_device}: done."))
+
+            threads = [
+                threading.Thread(target=worker, args=(worker_device, chunk), daemon=True)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+            for thread in threads:
+                thread.start()
+
+            done_count = 0
+            while done_count < len(threads):
+                try:
+                    kind, line = batch_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        break
+                    continue
+                if kind == "done":
+                    done_count += 1
+                    log_event(line, SCOPE)
+                else:
+                    log_event(line, SCOPE)
+                    yield html_message("info", line), None, ""
+                if self.stop_flag.value:
+                    yield html_message("info", f"ZIP batch cancelled. Processed {aggregate['processed']}/{total} images."), None, ""
+                    return
+
+            for thread in threads:
+                thread.join(timeout=1.0)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
             with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
                 for filename, text in captions.items():
@@ -654,7 +895,7 @@ class QwenEngine:
             after_vram = vram_usage_text()
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
             token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
-            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen ZIP batch failed. Check the terminal for details.")
@@ -688,7 +929,7 @@ class QwenEngine:
             for path in all_paths:
                 relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
                 caption_path = (output_dir / relative).with_suffix(extension)
-                if caption_path.exists() and skip_exists and not overwrite:
+                if caption_path.exists() and skip_exists and not overwrite and not append:
                     skipped += 1
                     continue
                 paths.append(path)
@@ -699,73 +940,601 @@ class QwenEngine:
             devices = parse_device_ids(settings.get("device_id") or "0", allow_cpu=True)
             reset_vram_peak_stats(devices)
             before_vram = vram_usage_text()
-            yield html_message("info", f"Loading Qwen model. Queued {len(paths)} image(s), skipped {skipped}."), ""
-            self.load_model(settings)
+            yield html_message(
+                "info",
+                f"Loading Qwen model(s). Queued {len(paths)} image(s), skipped {skipped}. Devices: {', '.join(str(device) for device in devices)}.",
+            ), ""
             batch_size = max(1, int(settings.get("folder_batch_size", 1) or 1))
-            processed = 0
-            failed = 0
+            aggregate = {"processed": 0, "skipped": skipped, "failed": 0}
             started = time.time()
             total_generated_tokens = 0
             total_generation_seconds = 0.0
-            for offset in range(0, len(paths), batch_size):
-                if self.stop_flag.value:
-                    yield html_message("info", f"Stopped. Processed {processed}/{len(paths)} queued images, {skipped} skipped."), ""
-                    return
-                for path in paths[offset : offset + batch_size]:
-                    if self.stop_flag.value:
-                        break
-                    try:
-                        relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
-                        output_image_path = output_dir / relative
-                        output_caption_path = output_image_path.with_suffix(extension)
-                        if output_caption_path.exists() and skip_exists and not overwrite:
-                            skipped += 1
+            aggregate_lock = threading.Lock()
+            batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+            chunks = split_round_robin(paths, devices)
+            total = len(all_paths)
+            log_event(
+                f"Qwen folder batch started: {len(paths)} queued, {skipped} skipped, batch_size={batch_size}, devices={devices}.",
+                SCOPE,
+            )
+            process_chunks = [
+                (worker_device, chunk)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+
+            if len(process_chunks) > 1:
+                ctx = mp.get_context("spawn")
+                process_queue: Any = ctx.Queue()
+                processes: list[mp.Process] = []
+                chunk_sizes: dict[str, int] = {}
+                done_devices: set[str] = set()
+                for worker_device, chunk in process_chunks:
+                    chunk_sizes[str(worker_device)] = len(chunk)
+                    process = ctx.Process(
+                        target=_qwen_folder_process_worker,
+                        args=(
+                            process_queue,
+                            str(self.model_path),
+                            [str(path) for path in chunk],
+                            str(input_dir),
+                            str(output_dir),
+                            process_subfolders,
+                            extension,
+                            dict(settings),
+                            worker_device,
+                        ),
+                        daemon=False,
+                    )
+                    processes.append(process)
+                    log_event(f"Starting Qwen process worker for device {worker_device}: {len(chunk)} image(s).", SCOPE)
+                    process.start()
+
+                try:
+                    done_count = 0
+                    while done_count < len(processes):
+                        if self.stop_flag.value:
+                            for process in processes:
+                                if process.is_alive():
+                                    process.terminate()
+                            yield html_message("info", "Qwen folder batch stopped. Child GPU processes were terminated."), ""
+                            return
+                        try:
+                            event = process_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            if not any(process.is_alive() for process in processes):
+                                break
                             continue
-                        image = load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
-                        image_settings = _settings_for_image(settings, path, image)
-                        raw = self.generate_caption(image, image_settings)
-                        final, parsed, warnings = self._finalize_output(image, raw, image_settings)
-                        stats = self.last_generation_stats
-                        total_generated_tokens += stats.generated_tokens
-                        total_generation_seconds += stats.elapsed_seconds
-                        if warnings:
-                            log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
-                        actual_caption = save_caption_file(
-                            output_caption_path,
-                            final,
-                            overwrite=overwrite,
-                            append=append,
-                            remove_newlines=False,
-                            prefix="",
-                            suffix="",
-                        )
-                        copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
-                        if save_boxed_images:
-                            rows = json_to_element_rows(parsed, bbox_order="yxyx")
-                            if rows:
-                                try:
-                                    boxed_source = output_image_path if output_image_path.exists() else path
-                                    save_boxed_image(
-                                        boxed_source,
-                                        rows,
-                                        output_image_path.with_name(f"{output_image_path.stem}_boxed.png"),
-                                        bbox_order="yxyx",
-                                    )
-                                except Exception as exc:
-                                    log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
-                        if actual_caption:
-                            processed += 1
-                    except Exception as exc:
-                        failed += 1
-                        log_event(f"Failed {path}: {format_exception(exc)}", SCOPE)
-                elapsed = max(time.time() - started, 0.01)
+
+                        kind = str(event.get("kind") or "")
+                        worker_device = event.get("device_id")
+                        if kind == "progress":
+                            with aggregate_lock:
+                                aggregate["processed"] += int(event.get("processed_delta", 0) or 0)
+                                aggregate["skipped"] += int(event.get("skipped_delta", 0) or 0)
+                                aggregate["failed"] += int(event.get("failed_delta", 0) or 0)
+                                total_generated_tokens += int(event.get("generated_tokens", 0) or 0)
+                                total_generation_seconds += float(event.get("generation_seconds", 0.0) or 0.0)
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=int(event.get("last_batch_count", 0) or 0),
+                                    last_batch_seconds=float(event.get("last_batch_seconds", 0.0) or 0.0),
+                                    token_speed=token_speed,
+                                    device_id=worker_device,
+                                    worker_processed=int(event.get("local_processed", 0) or 0),
+                                    worker_total=int(event.get("worker_total", 0) or 0),
+                                    worker_skipped=int(event.get("local_skipped", 0) or 0),
+                                    worker_failed=int(event.get("local_failed", 0) or 0),
+                                )
+                            if event.get("message"):
+                                line = f"{line} {event['message']}"
+                            log_event(line, SCOPE)
+                            yield html_message("info", line), ""
+                        elif kind == "done":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                            line = (
+                                f"Device {worker_device}: process complete with "
+                                f"{int(event.get('local_processed', 0) or 0)} processed, "
+                                f"{int(event.get('local_skipped', 0) or 0)} skipped, "
+                                f"{int(event.get('local_failed', 0) or 0)} failed."
+                            )
+                            log_event(line, SCOPE)
+                            yield html_message("info", line), ""
+                        elif kind == "fatal":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                                with aggregate_lock:
+                                    aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: process failed: {event.get('error') or 'unknown error'}"
+                            log_event(line, SCOPE)
+                            yield html_message("error", line), ""
+
+                    for process in processes:
+                        process.join(timeout=5.0)
+                    for worker_device, process in zip([device for device, _chunk in process_chunks], processes):
+                        key = str(worker_device)
+                        if process.exitcode not in (0, None) and key not in done_devices:
+                            with aggregate_lock:
+                                aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: process exited with code {process.exitcode}."
+                            log_event(line, SCOPE)
+                            yield html_message("error", line), ""
+                finally:
+                    for process in processes:
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2.0)
+
+                apply_torch_optimizations(settings, "after")
+                after_vram = vram_usage_text()
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
-                yield html_message("info", f"Processed {processed}/{len(paths)} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s, {token_speed:.2f} tok/s."), ""
+                token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+                yield html_message("success", f"Qwen folder batch complete. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+                return
+
+            def worker(worker_device: int | str, chunk: list[Path]) -> None:
+                nonlocal total_generated_tokens, total_generation_seconds
+                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path)
+                worker_settings = dict(settings)
+                worker_settings["device_id"] = str(worker_device)
+                local_processed = 0
+                local_skipped = 0
+                local_failed = 0
+                try:
+                    worker_engine.load_model(worker_settings)
+                    for offset in range(0, len(chunk), batch_size):
+                        if self.stop_flag.value:
+                            break
+                        batch_paths = chunk[offset : offset + batch_size]
+                        work_items: list[tuple[Path, Path, Path]] = []
+                        with aggregate_lock:
+                            for path in batch_paths:
+                                relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
+                                output_image_path = output_dir / relative
+                                output_caption_path = output_image_path.with_suffix(extension)
+                                if output_caption_path.exists() and skip_exists and not overwrite and not append:
+                                    aggregate["skipped"] += 1
+                                    local_skipped += 1
+                                    continue
+                                work_items.append((path, output_image_path, output_caption_path))
+                        if not work_items:
+                            with aggregate_lock:
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                            continue
+                        try:
+                            images = [
+                                load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
+                                for path, _, _ in work_items
+                            ]
+                            settings_batch = [
+                                _settings_for_image(worker_settings, path, image)
+                                for (path, _, _), image in zip(work_items, images)
+                            ]
+                            log_event(
+                                f"Device {worker_device}: Qwen folder true batch {offset + 1}-{offset + len(work_items)} of {len(chunk)}.",
+                                SCOPE,
+                            )
+                            batch_started = time.time()
+                            raw_outputs = worker_engine.generate_captions(images, settings_batch)
+                            batch_elapsed = max(time.time() - batch_started, 1e-9)
+                            stats = worker_engine.last_generation_stats
+                            with aggregate_lock:
+                                total_generated_tokens += stats.generated_tokens
+                                total_generation_seconds += stats.elapsed_seconds
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                for (path, output_image_path, output_caption_path), image, image_settings, raw in zip(
+                                    work_items,
+                                    images,
+                                    settings_batch,
+                                    raw_outputs,
+                                ):
+                                    final, parsed, warnings = worker_engine._finalize_output(image, raw, image_settings)
+                                    if warnings:
+                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                                    actual_caption = save_caption_file(
+                                        output_caption_path,
+                                        final,
+                                        overwrite=overwrite,
+                                        append=append,
+                                        remove_newlines=False,
+                                        prefix="",
+                                        suffix="",
+                                    )
+                                    copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
+                                    if save_boxed_images:
+                                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
+                                        if rows:
+                                            try:
+                                                boxed_source = output_image_path if output_image_path.exists() else path
+                                                save_boxed_image(
+                                                    boxed_source,
+                                                    rows,
+                                                    output_image_path.with_name(f"{output_image_path.stem}_boxed.png"),
+                                                    bbox_order="yxyx",
+                                                )
+                                            except Exception as exc:
+                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                    if actual_caption:
+                                        aggregate["processed"] += 1
+                                        local_processed += 1
+                                    else:
+                                        aggregate["skipped"] += 1
+                                        local_skipped += 1
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=len(work_items),
+                                    last_batch_seconds=batch_elapsed,
+                                    token_speed=token_speed,
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                        except Exception as exc:
+                            with aggregate_lock:
+                                aggregate["failed"] += len(work_items)
+                                local_failed += len(work_items)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", f"{line} Failed batch: {format_exception(exc)}"))
+                finally:
+                    if worker_engine is not self:
+                        worker_engine.clear_models()
+                    batch_queue.put(("done", f"Device {worker_device}: done."))
+
+            threads = [
+                threading.Thread(target=worker, args=(worker_device, chunk), daemon=True)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+            for thread in threads:
+                thread.start()
+
+            done_count = 0
+            while done_count < len(threads):
+                try:
+                    kind, line = batch_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        break
+                    continue
+                if kind == "done":
+                    done_count += 1
+                    log_event(line, SCOPE)
+                else:
+                    log_event(line, SCOPE)
+                    yield html_message("info", line), ""
+                if self.stop_flag.value:
+                    yield html_message("info", f"Stopped. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped."), ""
+                    return
+
+            for thread in threads:
+                thread.join(timeout=1.0)
             apply_torch_optimizations(settings, "after")
             after_vram = vram_usage_text()
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
             token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
-            yield html_message("success", f"Qwen folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+            yield html_message("success", f"Qwen folder batch complete. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), html_message("error", "Qwen folder batch failed. Check the terminal for details.")
+
+
+def _qwen_folder_process_worker(
+    event_queue: Any,
+    model_path_text: str,
+    path_texts: list[str],
+    input_dir_text: str,
+    output_dir_text: str,
+    process_subfolders: bool,
+    extension: str,
+    settings: dict[str, Any],
+    worker_device: int | str,
+) -> None:
+    engine = QwenEngine(Path(model_path_text))
+    paths = [Path(path) for path in path_texts]
+    input_dir = Path(input_dir_text)
+    output_dir = Path(output_dir_text)
+    settings = dict(settings)
+    settings["device_id"] = str(worker_device)
+    settings["use_subprocess"] = False
+    overwrite = bool(settings.get("overwrite_caption", False))
+    append = bool(settings.get("append_caption", False))
+    skip_exists = bool(settings.get("skip_exists", True))
+    save_boxed_images = bool(settings.get("auto_save_boxed_image", True)) and not bool(settings.get("dont_save_boxed_images", False))
+    batch_size = max(1, int(settings.get("folder_batch_size", 1) or 1))
+    local_processed = 0
+    local_skipped = 0
+    local_failed = 0
+    try:
+        log_event(f"Device {worker_device}: Qwen process worker started with {len(paths)} image(s).", SCOPE)
+        engine.load_model(settings)
+        for offset in range(0, len(paths), batch_size):
+            batch_paths = paths[offset : offset + batch_size]
+            work_items: list[tuple[Path, Path, Path]] = []
+            for path in batch_paths:
+                relative = path.relative_to(input_dir) if process_subfolders else Path(path.name)
+                output_image_path = output_dir / relative
+                output_caption_path = output_image_path.with_suffix(extension)
+                if output_caption_path.exists() and skip_exists and not overwrite and not append:
+                    local_skipped += 1
+                    continue
+                work_items.append((path, output_image_path, output_caption_path))
+
+            if not work_items:
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "skipped_delta": len(batch_paths),
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                    }
+                )
+                continue
+
+            try:
+                images = [
+                    load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024))
+                    for path, _, _ in work_items
+                ]
+                settings_batch = [
+                    _settings_for_image(settings, path, image)
+                    for (path, _, _), image in zip(work_items, images)
+                ]
+                log_event(
+                    f"Device {worker_device}: Qwen process true batch {offset + 1}-{offset + len(work_items)} of {len(paths)}.",
+                    SCOPE,
+                )
+                batch_started = time.time()
+                raw_outputs = engine.generate_captions(images, settings_batch)
+                batch_elapsed = max(time.time() - batch_started, 1e-9)
+                stats = engine.last_generation_stats
+                saved_count = 0
+                skipped_count = 0
+                for (path, output_image_path, output_caption_path), image, image_settings, raw in zip(
+                    work_items,
+                    images,
+                    settings_batch,
+                    raw_outputs,
+                ):
+                    final, parsed, warnings = engine._finalize_output(image, raw, image_settings)
+                    if warnings:
+                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                    actual_caption = save_caption_file(
+                        output_caption_path,
+                        final,
+                        overwrite=overwrite,
+                        append=append,
+                        remove_newlines=False,
+                        prefix="",
+                        suffix="",
+                    )
+                    copy_image_if_needed(path, output_image_path, bool(settings.get("save_image", True)))
+                    if save_boxed_images:
+                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
+                        if rows:
+                            try:
+                                boxed_source = output_image_path if output_image_path.exists() else path
+                                save_boxed_image(
+                                    boxed_source,
+                                    rows,
+                                    output_image_path.with_name(f"{output_image_path.stem}_boxed.png"),
+                                    bbox_order="yxyx",
+                                )
+                            except Exception as exc:
+                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                    if actual_caption:
+                        saved_count += 1
+                        local_processed += 1
+                    else:
+                        skipped_count += 1
+                        local_skipped += 1
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": saved_count,
+                        "skipped_delta": skipped_count,
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": saved_count,
+                        "last_batch_seconds": batch_elapsed,
+                        "generated_tokens": stats.generated_tokens,
+                        "generation_seconds": stats.elapsed_seconds,
+                    }
+                )
+            except Exception as exc:
+                failed_count = len(work_items)
+                local_failed += failed_count
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "skipped_delta": 0,
+                        "failed_delta": failed_count,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                        "message": f"Failed batch: {format_exception(exc)}",
+                    }
+                )
+        event_queue.put(
+            {
+                "kind": "done",
+                "device_id": worker_device,
+                "local_processed": local_processed,
+                "local_skipped": local_skipped,
+                "local_failed": local_failed,
+            }
+        )
+    except Exception as exc:
+        event_queue.put({"kind": "fatal", "device_id": worker_device, "error": format_exception(exc)})
+    finally:
+        try:
+            engine.clear_models()
+        except Exception:
+            pass
+
+
+def _qwen_zip_process_worker(
+    event_queue: Any,
+    model_path_text: str,
+    path_texts: list[str],
+    settings: dict[str, Any],
+    worker_device: int | str,
+    extension: str,
+    batch_size: int,
+) -> None:
+    engine = QwenEngine(Path(model_path_text))
+    paths = [Path(path) for path in path_texts]
+    settings = dict(settings)
+    settings["device_id"] = str(worker_device)
+    settings["use_subprocess"] = False
+    local_processed = 0
+    local_failed = 0
+    try:
+        log_event(f"Device {worker_device}: Qwen ZIP process worker started with {len(paths)} image(s).", SCOPE)
+        engine.load_model(settings)
+        for offset in range(0, len(paths), batch_size):
+            batch_paths = paths[offset : offset + batch_size]
+            try:
+                images = [load_rgb_image(path, int(settings.get("image_long_edge", 1024) or 1024)) for path in batch_paths]
+                settings_batch = [_settings_for_image(settings, path, image) for path, image in zip(batch_paths, images)]
+                log_event(
+                    f"Device {worker_device}: Qwen ZIP process true batch {offset + 1}-{offset + len(batch_paths)} of {len(paths)}.",
+                    SCOPE,
+                )
+                batch_started = time.time()
+                raw_outputs = engine.generate_captions(images, settings_batch)
+                batch_elapsed = max(time.time() - batch_started, 1e-9)
+                stats = engine.last_generation_stats
+                caption_payload: dict[str, str] = {}
+                boxed_payload: dict[str, bytes] = {}
+                for path, image, image_settings, raw in zip(batch_paths, images, settings_batch, raw_outputs):
+                    final, parsed, warnings = engine._finalize_output(image, raw, image_settings)
+                    if warnings:
+                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                    caption_payload[path.with_suffix(extension).name] = final
+                    if bool(settings.get("auto_save_boxed_image", True)):
+                        rows = json_to_element_rows(parsed, bbox_order="yxyx")
+                        if rows:
+                            try:
+                                image_bytes = boxed_image_png_bytes(path, rows, bbox_order="yxyx")
+                                if image_bytes:
+                                    boxed_payload[f"{path.stem}_boxed.png"] = image_bytes
+                            except Exception as exc:
+                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                local_processed += len(caption_payload)
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": len(caption_payload),
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": len(caption_payload),
+                        "last_batch_seconds": batch_elapsed,
+                        "generated_tokens": stats.generated_tokens,
+                        "generation_seconds": stats.elapsed_seconds,
+                        "captions": caption_payload,
+                        "boxed_images": boxed_payload,
+                    }
+                )
+            except Exception as exc:
+                failed_count = len(batch_paths)
+                local_failed += failed_count
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "failed_delta": failed_count,
+                        "local_processed": local_processed,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                        "message": f"Failed batch: {format_exception(exc)}",
+                    }
+                )
+        event_queue.put(
+            {
+                "kind": "done",
+                "device_id": worker_device,
+                "local_processed": local_processed,
+                "local_failed": local_failed,
+            }
+        )
+    except Exception as exc:
+        event_queue.put({"kind": "fatal", "device_id": worker_device, "error": format_exception(exc)})
+    finally:
+        try:
+            engine.clear_models()
+        except Exception:
+            pass

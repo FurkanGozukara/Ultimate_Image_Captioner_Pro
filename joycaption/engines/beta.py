@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import multiprocessing as mp
+import queue
 import tempfile
 import threading
 import time
@@ -32,6 +34,7 @@ from ..common import (
     NAME_OPTION,
     OUTPUTS_DIR,
     apply_torch_optimizations,
+    batch_progress_line,
     clean_legacy_caption,
     coerce_image_path,
     copy_image_if_needed,
@@ -48,6 +51,7 @@ from ..common import (
     reset_vram_peak_stats,
     save_caption_file,
     save_numbered_generation,
+    split_round_robin,
     optimization_status_text,
     vram_usage_text,
 )
@@ -244,13 +248,15 @@ class BetaEngine:
             processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True, backend="pil")
             if getattr(processor.tokenizer, "pad_token", None) is None:
                 processor.tokenizer.pad_token = processor.tokenizer.eos_token
+            if hasattr(processor.tokenizer, "padding_side"):
+                processor.tokenizer.padding_side = "left"
             self.state.processor = processor
             log_event("Processor ready.", "Joy Caption Beta 1")
         return self.state.processor
 
     def _quant_config(self, quant: str) -> BitsAndBytesConfig | None:
         params = {"llm_int8_skip_modules": ["vision_tower", "multi_modal_projector"]}
-        if quant == "bf16":
+        if quant in {"bf16", "fp16"}:
             return None
         if quant == "int8":
             return BitsAndBytesConfig(load_in_8bit=True, **params)
@@ -290,7 +296,7 @@ class BetaEngine:
             for device_id in devices:
                 if device_id == "cpu":
                     device_map: str = "cpu"
-                    if quant != "bf16":
+                    if quant in {"int8", "nf4"}:
                         raise RuntimeError("int8 and nf4 quantization require CUDA in this app.")
                 else:
                     if not torch.cuda.is_available():
@@ -305,10 +311,11 @@ class BetaEngine:
                     load_kwargs["low_cpu_mem_usage"] = True
                 load_kwargs.update(attention_load_kwargs(optimizations, quant=quant))
                 log_event(f"Loading model on {device_map} with quant={quant}.", "Joy Caption Beta 1")
-                if quant == "bf16":
+                if quant in {"bf16", "fp16"}:
+                    dtype = torch.float32 if device_id == "cpu" else (torch.float16 if quant == "fp16" else torch.bfloat16)
                     model = LlavaForConditionalGeneration.from_pretrained(
                         self.model_path,
-                        dtype=torch.bfloat16,
+                        dtype=dtype,
                         device_map=device_map,
                         trust_remote_code=True,
                         **load_kwargs,
@@ -354,23 +361,42 @@ class BetaEngine:
         device_id = next(iter(models))
         return processor, models[device_id], device_id
 
+    def _model_for_device(self, device_id: int | str | None = None) -> tuple[Any, LlavaForConditionalGeneration, int | str]:
+        processor = self.state.processor
+        models = self.state.models or {}
+        if processor is None or not models:
+            raise RuntimeError("Model is not loaded.")
+        if device_id is None:
+            return self._first_model()
+        key: int | str = "cpu" if str(device_id).lower() == "cpu" else int(device_id)
+        if key not in models:
+            raise RuntimeError(f"Model is not loaded on device {device_id}.")
+        return processor, models[key], key
+
     @torch.inference_mode()
-    def generate_caption(
+    def generate_captions(
         self,
-        image: Image.Image,
+        images: Sequence[Image.Image],
         prompt: str,
         temperature: float,
         top_p: float,
         max_new_tokens: int,
-    ) -> str:
-        processor, model, _device_id = self._first_model()
-        log_event(f"Preparing Beta prompt and image tensors (max_new_tokens={int(max_new_tokens)}).", "Joy Caption Beta 1")
+        device_id: int | str | None = None,
+    ) -> list[str]:
+        if not images:
+            return []
+        processor, model, _device_id = self._model_for_device(device_id)
+        batch_count = len(images)
+        log_event(
+            f"Preparing Beta prompt and image tensors (batch={batch_count}, max_new_tokens={int(max_new_tokens)}).",
+            "Joy Caption Beta 1",
+        )
         convo = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt.strip()},
         ]
         convo_string = processor.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
-        inputs = processor(text=[convo_string], images=[image], return_tensors="pt").to(model.device)
+        inputs = processor(text=[convo_string] * batch_count, images=list(images), return_tensors="pt", padding=True).to(model.device)
         if hasattr(model, "vision_tower") and hasattr(model.vision_tower, "dtype"):
             inputs["pixel_values"] = inputs["pixel_values"].to(model.vision_tower.dtype)
         do_sample = bool(float(temperature) > 0)
@@ -385,7 +411,7 @@ class BetaEngine:
         if do_sample:
             generation_kwargs["temperature"] = max(float(temperature), 1e-5)
             generation_kwargs["top_p"] = float(top_p)
-        log_event(f"Generating caption | do_sample={do_sample}.", "Joy Caption Beta 1")
+        log_event(f"Generating {batch_count} Beta caption(s) in one batch | do_sample={do_sample}.", "Joy Caption Beta 1")
         self.last_generation_stats = BetaGenerationStats()
         _synchronize_if_cuda(model.device)
         generation_started = time.time()
@@ -394,15 +420,27 @@ class BetaEngine:
         _synchronize_if_cuda(model.device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
         preds = generate_ids[:, inputs["input_ids"].shape[1] :]
-        generated_token_count = max(0, int(preds.shape[-1]))
+        generated_token_count = max(0, int(preds.numel()))
         self.last_generation_stats = BetaGenerationStats(
             generated_tokens=generated_token_count,
             elapsed_seconds=generation_elapsed,
             tokens_per_second=generated_token_count / generation_elapsed,
         )
-        caption = processor.tokenizer.decode(preds[0], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-        log_event(f"Generation complete. Token speed: {_generation_stats_text(self.last_generation_stats)}.", "Joy Caption Beta 1")
-        return caption.strip()
+        captions = processor.tokenizer.batch_decode(preds, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        log_event(f"Batch generation complete. Token speed: {_generation_stats_text(self.last_generation_stats)}.", "Joy Caption Beta 1")
+        return [str(caption).strip() for caption in captions]
+
+    @torch.inference_mode()
+    def generate_caption(
+        self,
+        image: Image.Image,
+        prompt: str,
+        temperature: float,
+        top_p: float,
+        max_new_tokens: int,
+    ) -> str:
+        captions = self.generate_captions([image], prompt, temperature, top_p, max_new_tokens)
+        return captions[0] if captions else ""
 
     def caption_single(
         self,
@@ -663,51 +701,273 @@ class BetaEngine:
                 return
         self.stop_flag.reset()
         try:
-            yield html_message("info", "Loading model..."), None, ""
-            reset_vram_peak_stats(parse_device_ids(device_id, allow_cpu=True))
+            yield html_message("info", "Loading model(s)..."), None, ""
+            devices = parse_device_ids(device_id, allow_cpu=True)
+            reset_vram_peak_stats(devices)
             before_vram = vram_usage_text()
-            self.load_model(quant, device_id, optimizations)
             paths = sorted([self._file_path(item) for item in files_list], key=natural_sort_key)
             prompt = self.build_prompt(caption_type, caption_length, extra_options, name_input, custom_prompt_text)
             captions: dict[str, str] = {}
             total = len(paths)
+            batch_size_value = max(1, int(batch_size))
             total_generated_tokens = 0
             total_generation_seconds = 0.0
-            log_event(f"Files-to-ZIP batch started: {total} image(s), batch_size={batch_size}.", "Joy Caption Beta 1")
-            for offset in range(0, total, max(1, int(batch_size))):
-                if self.stop_flag.value:
-                    yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
-                    return
-                batch = paths[offset : offset + max(1, int(batch_size))]
-                for path in batch:
-                    if self.stop_flag.value:
-                        break
-                    log_event(f"ZIP batch captioning {path.name}.", "Joy Caption Beta 1")
-                    image = load_rgb_image(path)
-                    caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
-                    stats = self.last_generation_stats
-                    total_generated_tokens += stats.generated_tokens
-                    total_generation_seconds += stats.elapsed_seconds
-                    if discard_repeats:
-                        caption = remove_repeating_sentences(caption)
-                    caption = clean_legacy_caption(caption)
-                    captions[path.with_suffix(".txt").name] = finalize_caption_text(
-                        caption,
-                        remove_newlines=remove_newlines,
-                        prefix=caption_prefix,
-                        suffix=caption_suffix,
-                        replace_pairs=replace_pairs,
-                        replace_case_sensitive=replace_case_sensitive,
-                        replace_single_word=replace_single_word,
+            aggregate = {"processed": 0, "failed": 0}
+            aggregate_lock = threading.Lock()
+            batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+            chunks = split_round_robin(paths, devices)
+            started = time.time()
+            log_event(
+                f"Files-to-ZIP batch started: {total} image(s), batch_size={batch_size_value}, devices={devices}.",
+                "Joy Caption Beta 1",
+            )
+            process_chunks = [
+                (worker_device, chunk)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+
+            if len(process_chunks) > 1:
+                ctx = mp.get_context("spawn")
+                process_queue: Any = ctx.Queue()
+                processes: list[mp.Process] = []
+                chunk_sizes: dict[str, int] = {}
+                done_devices: set[str] = set()
+                for worker_device, chunk in process_chunks:
+                    chunk_sizes[str(worker_device)] = len(chunk)
+                    process = ctx.Process(
+                        target=_beta_zip_process_worker,
+                        args=(
+                            process_queue,
+                            str(self.model_path),
+                            [str(path) for path in chunk],
+                            prompt,
+                            float(temperature),
+                            float(top_p),
+                            int(max_new_tokens),
+                            batch_size_value,
+                            str(quant),
+                            worker_device,
+                            dict(optimizations),
+                            bool(remove_newlines),
+                            bool(discard_repeats),
+                            str(caption_prefix),
+                            str(caption_suffix),
+                            replace_pairs,
+                            bool(replace_case_sensitive),
+                            bool(replace_single_word),
+                        ),
+                        daemon=False,
                     )
+                    processes.append(process)
+                    log_event(f"Starting Beta ZIP process worker for device {worker_device}: {len(chunk)} image(s).", "Joy Caption Beta 1")
+                    process.start()
+
+                try:
+                    done_count = 0
+                    while done_count < len(processes):
+                        if self.stop_flag.value:
+                            for process in processes:
+                                if process.is_alive():
+                                    process.terminate()
+                            yield html_message("info", f"ZIP batch cancelled. Processed {aggregate['processed']}/{total} images."), None, ""
+                            return
+                        try:
+                            event = process_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            if not any(process.is_alive() for process in processes):
+                                break
+                            continue
+
+                        kind = str(event.get("kind") or "")
+                        worker_device = event.get("device_id")
+                        if kind == "progress":
+                            with aggregate_lock:
+                                aggregate["processed"] += int(event.get("processed_delta", 0) or 0)
+                                aggregate["failed"] += int(event.get("failed_delta", 0) or 0)
+                                total_generated_tokens += int(event.get("generated_tokens", 0) or 0)
+                                total_generation_seconds += float(event.get("generation_seconds", 0.0) or 0.0)
+                                captions.update(event.get("captions") or {})
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=int(event.get("last_batch_count", 0) or 0),
+                                    last_batch_seconds=float(event.get("last_batch_seconds", 0.0) or 0.0),
+                                    token_speed=token_speed,
+                                    device_id=worker_device,
+                                    worker_processed=int(event.get("local_processed", 0) or 0),
+                                    worker_total=int(event.get("worker_total", 0) or 0),
+                                    worker_failed=int(event.get("local_failed", 0) or 0),
+                                )
+                            if event.get("message"):
+                                line = f"{line} {event['message']}"
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("info", line), None, ""
+                        elif kind == "done":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                            log_event(
+                                f"Device {worker_device}: ZIP process complete with "
+                                f"{int(event.get('local_processed', 0) or 0)} processed, "
+                                f"{int(event.get('local_failed', 0) or 0)} failed.",
+                                "Joy Caption Beta 1",
+                            )
+                        elif kind == "fatal":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                                with aggregate_lock:
+                                    aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: ZIP process failed: {event.get('error') or 'unknown error'}"
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("error", line), None, ""
+
+                    for process in processes:
+                        process.join(timeout=5.0)
+                    for worker_device, process in zip([device for device, _chunk in process_chunks], processes):
+                        key = str(worker_device)
+                        if process.exitcode not in (0, None) and key not in done_devices:
+                            with aggregate_lock:
+                                aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: ZIP process exited with code {process.exitcode}."
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("error", line), None, ""
+                finally:
+                    for process in processes:
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2.0)
+
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+                with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for filename, text in captions.items():
+                        archive.writestr(filename, text)
+                apply_torch_optimizations(optimizations, "after")
+                after_vram = vram_usage_text()
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
-                yield html_message(
-                    "info",
-                    f"Processed {min(offset + len(batch), total)}/{total} images. Token speed {token_speed:.2f} tok/s.",
-                ), None, ""
+                token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+                log_event(f"Files-to-ZIP batch complete: {tmp.name}", "Joy Caption Beta 1")
+                yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+                return
+
+            def worker(worker_device: int | str, chunk: list[Path]) -> None:
+                nonlocal total_generated_tokens, total_generation_seconds
+                worker_engine = self if len(devices) == 1 else BetaEngine(self.model_path)
+                local_processed = 0
+                local_failed = 0
+                try:
+                    worker_engine.load_model(quant, str(worker_device), optimizations)
+                    for offset in range(0, len(chunk), batch_size_value):
+                        if self.stop_flag.value:
+                            break
+                        batch_paths = chunk[offset : offset + batch_size_value]
+                        try:
+                            images = [load_rgb_image(path) for path in batch_paths]
+                            log_event(
+                                f"Device {worker_device}: ZIP true batch {offset + 1}-{offset + len(batch_paths)} of {len(chunk)}.",
+                                "Joy Caption Beta 1",
+                            )
+                            batch_started = time.time()
+                            raw_captions = worker_engine.generate_captions(
+                                images,
+                                prompt,
+                                temperature,
+                                top_p,
+                                max_new_tokens,
+                                device_id=worker_device,
+                            )
+                            batch_elapsed = max(time.time() - batch_started, 1e-9)
+                            stats = worker_engine.last_generation_stats
+                            with aggregate_lock:
+                                total_generated_tokens += stats.generated_tokens
+                                total_generation_seconds += stats.elapsed_seconds
+                                for path, caption in zip(batch_paths, raw_captions):
+                                    if discard_repeats:
+                                        caption = remove_repeating_sentences(caption)
+                                    caption = clean_legacy_caption(caption)
+                                    captions[path.with_suffix(".txt").name] = finalize_caption_text(
+                                        caption,
+                                        remove_newlines=remove_newlines,
+                                        prefix=caption_prefix,
+                                        suffix=caption_suffix,
+                                        replace_pairs=replace_pairs,
+                                        replace_case_sensitive=replace_case_sensitive,
+                                        replace_single_word=replace_single_word,
+                                    )
+                                    aggregate["processed"] += 1
+                                    local_processed += 1
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=len(batch_paths),
+                                    last_batch_seconds=batch_elapsed,
+                                    token_speed=token_speed,
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                        except Exception as exc:
+                            with aggregate_lock:
+                                aggregate["failed"] += len(batch_paths)
+                                local_failed += len(batch_paths)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", f"{line} Failed batch: {format_exception(exc)}"))
+                finally:
+                    if worker_engine is not self:
+                        worker_engine.clear_models()
+                    batch_queue.put(("done", f"Device {worker_device}: done."))
+
+            threads = [
+                threading.Thread(target=worker, args=(worker_device, chunk), daemon=True)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+            for thread in threads:
+                thread.start()
+
+            done_count = 0
+            while done_count < len(threads):
+                try:
+                    kind, line = batch_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        break
+                    continue
+                if kind == "done":
+                    done_count += 1
+                    log_event(line, "Joy Caption Beta 1")
+                else:
+                    log_event(line, "Joy Caption Beta 1")
+                    yield html_message("info", line), None, ""
                 if self.stop_flag.value:
-                    yield html_message("info", f"ZIP batch cancelled. Processed {len(captions)}/{total} images."), None, ""
+                    yield html_message("info", f"ZIP batch cancelled. Processed {aggregate['processed']}/{total} images."), None, ""
                     return
+
+            for thread in threads:
+                thread.join(timeout=1.0)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
             with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
                 for filename, text in captions.items():
@@ -717,7 +977,7 @@ class BetaEngine:
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
             token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
             log_event(f"Files-to-ZIP batch complete: {tmp.name}", "Joy Caption Beta 1")
-            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
+            yield html_message("success", f"ZIP batch complete. Processed {len(captions)}/{total} images, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), tmp.name, ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), None, html_message("error", "ZIP batch failed. Check the terminal for details.")
@@ -840,7 +1100,7 @@ class BetaEngine:
                     output_dir,
                     preserve_subfolders=process_subfolders_cb,
                 )
-                if caption_path.exists() and not overwrite_caption_cb:
+                if caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
                     skipped += 1
                     continue
                 paths.append(path)
@@ -849,79 +1109,628 @@ class BetaEngine:
                 return
 
             prompt = self.build_prompt(caption_type, caption_length, extra_options, name_input, custom_prompt_text)
-            yield html_message("info", "Loading model..."), ""
-            reset_vram_peak_stats(parse_device_ids(device_id, allow_cpu=True))
+            devices = parse_device_ids(device_id, allow_cpu=True)
+            yield html_message(
+                "info",
+                f"Loading model(s). Queued {len(paths)} image(s), skipped {skipped}. Devices: {', '.join(str(device) for device in devices)}.",
+            ), ""
+            reset_vram_peak_stats(devices)
             before_vram = vram_usage_text()
-            self.load_model(quant, device_id, optimizations)
-            total = len(paths)
-            processed = 0
-            failed = 0
+            total = len(all_paths)
+            batch_size_value = max(1, int(batch_size))
+            aggregate = {"processed": 0, "skipped": skipped, "failed": 0}
             started = time.time()
             total_generated_tokens = 0
             total_generation_seconds = 0.0
-            log_event(f"Folder batch started: {total} queued, {skipped} skipped before run.", "Joy Caption Beta 1")
-            for offset in range(0, total, max(1, int(batch_size))):
-                if self.stop_flag.value:
-                    yield html_message("info", f"Stopped. Processed {processed}/{total} queued images, {skipped} skipped."), ""
-                    return
-                for path in paths[offset : offset + max(1, int(batch_size))]:
-                    if self.stop_flag.value:
-                        break
-                    try:
-                        output_image_path, output_caption_path = resolve_output_paths(
-                            path,
-                            input_dir,
-                            output_dir,
-                            preserve_subfolders=process_subfolders_cb,
-                        )
-                        if output_caption_path.exists() and not overwrite_caption_cb:
-                            skipped += 1
+            aggregate_lock = threading.Lock()
+            batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+            chunks = split_round_robin(paths, devices)
+            log_event(
+                f"Folder batch started: {len(paths)} queued, {skipped} skipped before run, batch_size={batch_size_value}, devices={devices}.",
+                "Joy Caption Beta 1",
+            )
+            process_chunks = [
+                (worker_device, chunk)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+
+            if len(process_chunks) > 1:
+                ctx = mp.get_context("spawn")
+                process_queue: Any = ctx.Queue()
+                processes: list[mp.Process] = []
+                chunk_sizes: dict[str, int] = {}
+                done_devices: set[str] = set()
+                for worker_device, chunk in process_chunks:
+                    chunk_sizes[str(worker_device)] = len(chunk)
+                    process = ctx.Process(
+                        target=_beta_folder_process_worker,
+                        args=(
+                            process_queue,
+                            str(self.model_path),
+                            [str(path) for path in chunk],
+                            str(input_dir),
+                            str(output_dir),
+                            bool(copy_images_cb),
+                            bool(skip_exists_cb),
+                            bool(overwrite_caption_cb),
+                            bool(append_caption_cb),
+                            bool(remove_newlines_cb),
+                            bool(discard_repeats_cb),
+                            bool(process_subfolders_cb),
+                            int(downscale),
+                            str(caption_prefix),
+                            str(caption_suffix),
+                            prompt,
+                            float(temperature),
+                            float(top_p),
+                            int(max_new_tokens),
+                            batch_size_value,
+                            str(quant),
+                            worker_device,
+                            dict(optimizations),
+                            replace_pairs,
+                            bool(replace_case_sensitive),
+                            bool(replace_single_word),
+                        ),
+                        daemon=False,
+                    )
+                    processes.append(process)
+                    log_event(f"Starting Beta process worker for device {worker_device}: {len(chunk)} image(s).", "Joy Caption Beta 1")
+                    process.start()
+
+                try:
+                    done_count = 0
+                    while done_count < len(processes):
+                        if self.stop_flag.value:
+                            for process in processes:
+                                if process.is_alive():
+                                    process.terminate()
+                            yield html_message("info", "Beta folder batch stopped. Child GPU processes were terminated."), ""
+                            return
+                        try:
+                            event = process_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            if not any(process.is_alive() for process in processes):
+                                break
                             continue
-                        log_event(f"Folder batch captioning {path.name}.", "Joy Caption Beta 1")
-                        image = load_rgb_image(path, downscale if downscale > 0 else None)
-                        caption = self.generate_caption(image, prompt, temperature, top_p, max_new_tokens)
-                        stats = self.last_generation_stats
-                        total_generated_tokens += stats.generated_tokens
-                        total_generation_seconds += stats.elapsed_seconds
-                        if discard_repeats_cb:
-                            caption = remove_repeating_sentences(caption)
-                        caption = clean_legacy_caption(caption)
-                        actual_caption = save_caption_file(
-                            output_caption_path,
-                            caption,
-                            overwrite=overwrite_caption_cb,
-                            append=append_caption_cb,
-                            remove_newlines=remove_newlines_cb,
-                            prefix=caption_prefix,
-                            suffix=caption_suffix,
-                            replace_pairs=replace_pairs,
-                            replace_case_sensitive=replace_case_sensitive,
-                            replace_single_word=replace_single_word,
-                        )
-                        copy_image_if_needed(path, output_image_path, copy_images_cb)
-                        if actual_caption:
-                            processed += 1
-                            log_event(f"Folder batch saved: {actual_caption}", "Joy Caption Beta 1")
-                        else:
-                            skipped += 1
-                    except Exception as exc:
-                        failed += 1
-                        print(f"Failed {path}: {format_exception(exc)}")
-                elapsed = max(0.01, time.time() - started)
+
+                        kind = str(event.get("kind") or "")
+                        worker_device = event.get("device_id")
+                        if kind == "progress":
+                            with aggregate_lock:
+                                aggregate["processed"] += int(event.get("processed_delta", 0) or 0)
+                                aggregate["skipped"] += int(event.get("skipped_delta", 0) or 0)
+                                aggregate["failed"] += int(event.get("failed_delta", 0) or 0)
+                                total_generated_tokens += int(event.get("generated_tokens", 0) or 0)
+                                total_generation_seconds += float(event.get("generation_seconds", 0.0) or 0.0)
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=int(event.get("last_batch_count", 0) or 0),
+                                    last_batch_seconds=float(event.get("last_batch_seconds", 0.0) or 0.0),
+                                    token_speed=token_speed,
+                                    device_id=worker_device,
+                                    worker_processed=int(event.get("local_processed", 0) or 0),
+                                    worker_total=int(event.get("worker_total", 0) or 0),
+                                    worker_skipped=int(event.get("local_skipped", 0) or 0),
+                                    worker_failed=int(event.get("local_failed", 0) or 0),
+                                )
+                            if event.get("message"):
+                                line = f"{line} {event['message']}"
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("info", line), ""
+                        elif kind == "done":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                            line = (
+                                f"Device {worker_device}: process complete with "
+                                f"{int(event.get('local_processed', 0) or 0)} processed, "
+                                f"{int(event.get('local_skipped', 0) or 0)} skipped, "
+                                f"{int(event.get('local_failed', 0) or 0)} failed."
+                            )
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("info", line), ""
+                        elif kind == "fatal":
+                            key = str(worker_device)
+                            if key not in done_devices:
+                                done_devices.add(key)
+                                done_count += 1
+                                with aggregate_lock:
+                                    aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: process failed: {event.get('error') or 'unknown error'}"
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("error", line), ""
+
+                    for process in processes:
+                        process.join(timeout=5.0)
+                    for worker_device, process in zip([device for device, _chunk in process_chunks], processes):
+                        key = str(worker_device)
+                        if process.exitcode not in (0, None) and key not in done_devices:
+                            with aggregate_lock:
+                                aggregate["failed"] += chunk_sizes.get(key, 0)
+                            line = f"Device {worker_device}: process exited with code {process.exitcode}."
+                            log_event(line, "Joy Caption Beta 1")
+                            yield html_message("error", line), ""
+                finally:
+                    for process in processes:
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2.0)
+
+                apply_torch_optimizations(optimizations, "after")
+                after_vram = vram_usage_text()
                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
-                yield html_message(
-                    "info",
-                    f"Processed {processed}/{total} queued images, {skipped} skipped, {failed} failed. Speed {processed / elapsed:.2f} img/s, {token_speed:.2f} tok/s.",
-                ), ""
+                token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
+                log_event(
+                    f"Folder batch complete: processed={aggregate['processed']}, skipped={aggregate['skipped']}, failed={aggregate['failed']}.",
+                    "Joy Caption Beta 1",
+                )
+                yield html_message("success", f"Folder batch complete. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+                return
+
+            def worker(worker_device: int | str, chunk: list[Path]) -> None:
+                nonlocal total_generated_tokens, total_generation_seconds
+                worker_engine = self if len(devices) == 1 else BetaEngine(self.model_path)
+                local_processed = 0
+                local_skipped = 0
+                local_failed = 0
+                try:
+                    worker_engine.load_model(quant, str(worker_device), optimizations)
+                    for offset in range(0, len(chunk), batch_size_value):
+                        if self.stop_flag.value:
+                            break
+                        batch_paths = chunk[offset : offset + batch_size_value]
+                        work_items: list[tuple[Path, Path, Path]] = []
+                        with aggregate_lock:
+                            for path in batch_paths:
+                                output_image_path, output_caption_path = resolve_output_paths(
+                                    path,
+                                    input_dir,
+                                    output_dir,
+                                    preserve_subfolders=process_subfolders_cb,
+                                )
+                                if output_caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
+                                    aggregate["skipped"] += 1
+                                    local_skipped += 1
+                                    continue
+                                work_items.append((path, output_image_path, output_caption_path))
+                        if not work_items:
+                            with aggregate_lock:
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                            continue
+                        try:
+                            images = [load_rgb_image(path, downscale if downscale > 0 else None) for path, _, _ in work_items]
+                            log_event(
+                                f"Device {worker_device}: folder true batch {offset + 1}-{offset + len(work_items)} of {len(chunk)}.",
+                                "Joy Caption Beta 1",
+                            )
+                            batch_started = time.time()
+                            raw_captions = worker_engine.generate_captions(
+                                images,
+                                prompt,
+                                temperature,
+                                top_p,
+                                max_new_tokens,
+                                device_id=worker_device,
+                            )
+                            batch_elapsed = max(time.time() - batch_started, 1e-9)
+                            stats = worker_engine.last_generation_stats
+                            with aggregate_lock:
+                                total_generated_tokens += stats.generated_tokens
+                                total_generation_seconds += stats.elapsed_seconds
+                                token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
+                                for (path, output_image_path, output_caption_path), caption in zip(work_items, raw_captions):
+                                    if discard_repeats_cb:
+                                        caption = remove_repeating_sentences(caption)
+                                    caption = clean_legacy_caption(caption)
+                                    actual_caption = save_caption_file(
+                                        output_caption_path,
+                                        caption,
+                                        overwrite=overwrite_caption_cb,
+                                        append=append_caption_cb,
+                                        remove_newlines=remove_newlines_cb,
+                                        prefix=caption_prefix,
+                                        suffix=caption_suffix,
+                                        replace_pairs=replace_pairs,
+                                        replace_case_sensitive=replace_case_sensitive,
+                                        replace_single_word=replace_single_word,
+                                    )
+                                    copy_image_if_needed(path, output_image_path, copy_images_cb)
+                                    if actual_caption:
+                                        aggregate["processed"] += 1
+                                        local_processed += 1
+                                        log_event(f"Folder batch saved: {actual_caption}", "Joy Caption Beta 1")
+                                    else:
+                                        aggregate["skipped"] += 1
+                                        local_skipped += 1
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=len(work_items),
+                                    last_batch_seconds=batch_elapsed,
+                                    token_speed=token_speed,
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", line))
+                        except Exception as exc:
+                            with aggregate_lock:
+                                aggregate["failed"] += len(work_items)
+                                local_failed += len(work_items)
+                                line = batch_progress_line(
+                                    processed=aggregate["processed"],
+                                    total=total,
+                                    skipped=aggregate["skipped"],
+                                    failed=aggregate["failed"],
+                                    started=started,
+                                    last_batch_count=0,
+                                    last_batch_seconds=0.0,
+                                    token_speed=total_generated_tokens / max(total_generation_seconds, 1e-9),
+                                    device_id=worker_device if len(devices) > 1 else None,
+                                    worker_processed=local_processed,
+                                    worker_total=len(chunk),
+                                    worker_skipped=local_skipped,
+                                    worker_failed=local_failed,
+                                )
+                            batch_queue.put(("progress", f"{line} Failed batch: {format_exception(exc)}"))
+                finally:
+                    if worker_engine is not self:
+                        worker_engine.clear_models()
+                    batch_queue.put(("done", f"Device {worker_device}: done."))
+
+            threads = [
+                threading.Thread(target=worker, args=(worker_device, chunk), daemon=True)
+                for worker_device, chunk in zip(devices, chunks)
+                if chunk
+            ]
+            for thread in threads:
+                thread.start()
+
+            done_count = 0
+            while done_count < len(threads):
+                try:
+                    kind, line = batch_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        break
+                    continue
+                if kind == "done":
+                    done_count += 1
+                    log_event(line, "Joy Caption Beta 1")
+                else:
+                    log_event(line, "Joy Caption Beta 1")
+                    yield html_message("info", line), ""
+                if self.stop_flag.value:
+                    yield html_message("info", f"Stopped. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped."), ""
+                    return
+
+            for thread in threads:
+                thread.join(timeout=1.0)
             apply_torch_optimizations(optimizations, "after")
             after_vram = vram_usage_text()
             token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
             token_detail = f"{total_generated_tokens} token(s) in {total_generation_seconds:.2f}s ({token_speed:.2f} tok/s)"
-            log_event(f"Folder batch complete: processed={processed}, skipped={skipped}, failed={failed}.", "Joy Caption Beta 1")
-            yield html_message("success", f"Folder batch complete. Processed {processed}/{len(all_paths)} images, {skipped} skipped, {failed} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
+            log_event(
+                f"Folder batch complete: processed={aggregate['processed']}, skipped={aggregate['skipped']}, failed={aggregate['failed']}.",
+                "Joy Caption Beta 1",
+            )
+            yield html_message("success", f"Folder batch complete. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped, {aggregate['failed']} failed.<br>Token speed: {token_detail}<br>{optimization_status_text(optimizations)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>"), ""
         except Exception as exc:
             traceback.print_exc()
             yield html_message("error", format_exception(exc)), html_message("error", "Folder batch failed. Check the terminal for details.")
+
+
+def _beta_folder_process_worker(
+    event_queue: Any,
+    model_path_text: str,
+    path_texts: list[str],
+    input_dir_text: str,
+    output_dir_text: str,
+    copy_images_cb: bool,
+    skip_exists_cb: bool,
+    overwrite_caption_cb: bool,
+    append_caption_cb: bool,
+    remove_newlines_cb: bool,
+    discard_repeats_cb: bool,
+    process_subfolders_cb: bool,
+    downscale: int,
+    caption_prefix: str,
+    caption_suffix: str,
+    prompt: str,
+    temperature: float,
+    top_p: float,
+    max_new_tokens: int,
+    batch_size_value: int,
+    quant: str,
+    worker_device: int | str,
+    optimizations: dict[str, Any],
+    replace_pairs: Any | None,
+    replace_case_sensitive: bool,
+    replace_single_word: bool,
+) -> None:
+    engine = BetaEngine(Path(model_path_text))
+    paths = [Path(path) for path in path_texts]
+    input_dir = Path(input_dir_text)
+    output_dir = Path(output_dir_text)
+    local_processed = 0
+    local_skipped = 0
+    local_failed = 0
+    try:
+        log_event(f"Device {worker_device}: Beta process worker started with {len(paths)} image(s).", "Joy Caption Beta 1")
+        engine.load_model(quant, str(worker_device), optimizations)
+        for offset in range(0, len(paths), batch_size_value):
+            batch_paths = paths[offset : offset + batch_size_value]
+            work_items: list[tuple[Path, Path, Path]] = []
+            for path in batch_paths:
+                output_image_path, output_caption_path = resolve_output_paths(
+                    path,
+                    input_dir,
+                    output_dir,
+                    preserve_subfolders=process_subfolders_cb,
+                )
+                if output_caption_path.exists() and skip_exists_cb and not overwrite_caption_cb and not append_caption_cb:
+                    local_skipped += 1
+                    continue
+                work_items.append((path, output_image_path, output_caption_path))
+
+            if not work_items:
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "skipped_delta": len(batch_paths),
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                    }
+                )
+                continue
+
+            try:
+                log_event(
+                    f"Device {worker_device}: Beta process true batch {offset + 1}-{offset + len(work_items)} of {len(paths)}.",
+                    "Joy Caption Beta 1",
+                )
+                images = [load_rgb_image(path, downscale if downscale > 0 else None) for path, _, _ in work_items]
+                batch_started = time.time()
+                raw_captions = engine.generate_captions(
+                    images,
+                    prompt,
+                    temperature,
+                    top_p,
+                    max_new_tokens,
+                    device_id=worker_device,
+                )
+                batch_elapsed = max(time.time() - batch_started, 1e-9)
+                stats = engine.last_generation_stats
+                saved_count = 0
+                skipped_count = 0
+                for (path, output_image_path, output_caption_path), caption in zip(work_items, raw_captions):
+                    if discard_repeats_cb:
+                        caption = remove_repeating_sentences(caption)
+                    caption = clean_legacy_caption(caption)
+                    actual_caption = save_caption_file(
+                        output_caption_path,
+                        caption,
+                        overwrite=overwrite_caption_cb,
+                        append=append_caption_cb,
+                        remove_newlines=remove_newlines_cb,
+                        prefix=caption_prefix,
+                        suffix=caption_suffix,
+                        replace_pairs=replace_pairs,
+                        replace_case_sensitive=replace_case_sensitive,
+                        replace_single_word=replace_single_word,
+                    )
+                    copy_image_if_needed(path, output_image_path, copy_images_cb)
+                    if actual_caption:
+                        saved_count += 1
+                        local_processed += 1
+                        log_event(f"Device {worker_device}: process saved {actual_caption}", "Joy Caption Beta 1")
+                    else:
+                        skipped_count += 1
+                        local_skipped += 1
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": saved_count,
+                        "skipped_delta": skipped_count,
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": saved_count,
+                        "last_batch_seconds": batch_elapsed,
+                        "generated_tokens": stats.generated_tokens,
+                        "generation_seconds": stats.elapsed_seconds,
+                    }
+                )
+            except Exception as exc:
+                failed_count = len(work_items)
+                local_failed += failed_count
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "skipped_delta": 0,
+                        "failed_delta": failed_count,
+                        "local_processed": local_processed,
+                        "local_skipped": local_skipped,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                        "message": f"Failed batch: {format_exception(exc)}",
+                    }
+                )
+        event_queue.put(
+            {
+                "kind": "done",
+                "device_id": worker_device,
+                "local_processed": local_processed,
+                "local_skipped": local_skipped,
+                "local_failed": local_failed,
+            }
+        )
+    except Exception as exc:
+        event_queue.put({"kind": "fatal", "device_id": worker_device, "error": format_exception(exc)})
+    finally:
+        try:
+            engine.clear_models()
+        except Exception:
+            pass
+
+
+def _beta_zip_process_worker(
+    event_queue: Any,
+    model_path_text: str,
+    path_texts: list[str],
+    prompt: str,
+    temperature: float,
+    top_p: float,
+    max_new_tokens: int,
+    batch_size_value: int,
+    quant: str,
+    worker_device: int | str,
+    optimizations: dict[str, Any],
+    remove_newlines: bool,
+    discard_repeats: bool,
+    caption_prefix: str,
+    caption_suffix: str,
+    replace_pairs: Any | None,
+    replace_case_sensitive: bool,
+    replace_single_word: bool,
+) -> None:
+    engine = BetaEngine(Path(model_path_text))
+    paths = [Path(path) for path in path_texts]
+    local_processed = 0
+    local_failed = 0
+    try:
+        log_event(f"Device {worker_device}: Beta ZIP process worker started with {len(paths)} image(s).", "Joy Caption Beta 1")
+        engine.load_model(quant, str(worker_device), optimizations)
+        for offset in range(0, len(paths), batch_size_value):
+            batch_paths = paths[offset : offset + batch_size_value]
+            try:
+                images = [load_rgb_image(path) for path in batch_paths]
+                log_event(
+                    f"Device {worker_device}: Beta ZIP process true batch {offset + 1}-{offset + len(batch_paths)} of {len(paths)}.",
+                    "Joy Caption Beta 1",
+                )
+                batch_started = time.time()
+                raw_captions = engine.generate_captions(
+                    images,
+                    prompt,
+                    temperature,
+                    top_p,
+                    max_new_tokens,
+                    device_id=worker_device,
+                )
+                batch_elapsed = max(time.time() - batch_started, 1e-9)
+                stats = engine.last_generation_stats
+                caption_payload: dict[str, str] = {}
+                for path, caption in zip(batch_paths, raw_captions):
+                    if discard_repeats:
+                        caption = remove_repeating_sentences(caption)
+                    caption = clean_legacy_caption(caption)
+                    caption_payload[path.with_suffix(".txt").name] = finalize_caption_text(
+                        caption,
+                        remove_newlines=remove_newlines,
+                        prefix=caption_prefix,
+                        suffix=caption_suffix,
+                        replace_pairs=replace_pairs,
+                        replace_case_sensitive=replace_case_sensitive,
+                        replace_single_word=replace_single_word,
+                    )
+                local_processed += len(caption_payload)
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": len(caption_payload),
+                        "failed_delta": 0,
+                        "local_processed": local_processed,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": len(caption_payload),
+                        "last_batch_seconds": batch_elapsed,
+                        "generated_tokens": stats.generated_tokens,
+                        "generation_seconds": stats.elapsed_seconds,
+                        "captions": caption_payload,
+                    }
+                )
+            except Exception as exc:
+                failed_count = len(batch_paths)
+                local_failed += failed_count
+                event_queue.put(
+                    {
+                        "kind": "progress",
+                        "device_id": worker_device,
+                        "processed_delta": 0,
+                        "failed_delta": failed_count,
+                        "local_processed": local_processed,
+                        "local_failed": local_failed,
+                        "worker_total": len(paths),
+                        "last_batch_count": 0,
+                        "last_batch_seconds": 0.0,
+                        "generated_tokens": 0,
+                        "generation_seconds": 0.0,
+                        "message": f"Failed batch: {format_exception(exc)}",
+                    }
+                )
+        event_queue.put(
+            {
+                "kind": "done",
+                "device_id": worker_device,
+                "local_processed": local_processed,
+                "local_failed": local_failed,
+            }
+        )
+    except Exception as exc:
+        event_queue.put({"kind": "fatal", "device_id": worker_device, "error": format_exception(exc)})
+    finally:
+        try:
+            engine.clear_models()
+        except Exception:
+            pass
 
 
 def extra_options_choices() -> list[str]:

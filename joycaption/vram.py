@@ -99,8 +99,8 @@ def legacy_vram_settings(label: str | int | None) -> dict[str, Any]:
     if value <= 16:
         return {"use_4bit": False, "use_fp16": True, "max_resolution": 1280, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 24:
-        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1536, "batch_size": 2, "attention_backend": DEFAULT_JOY_ATTENTION}
-    return {"use_4bit": False, "use_fp16": False, "max_resolution": 1536, "batch_size": 4, "attention_backend": DEFAULT_JOY_ATTENTION}
+        return {"use_4bit": False, "use_fp16": True, "max_resolution": 1536, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
+    return {"use_4bit": False, "use_fp16": False, "max_resolution": 1536, "batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
 
 
 def beta_vram_settings(label: str | int | None) -> dict[str, Any]:
@@ -108,10 +108,10 @@ def beta_vram_settings(label: str | int | None) -> dict[str, Any]:
     if value <= 10:
         return {"model_quantization": "nf4", "downscale_max_res": "768", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 16:
-        return {"model_quantization": "int8", "downscale_max_res": "1024", "zip_batch_size": 2, "folder_batch_size": 2, "attention_backend": DEFAULT_JOY_ATTENTION}
+        return {"model_quantization": "int8", "downscale_max_res": "1024", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
     if value <= 24:
-        return {"model_quantization": "bf16", "downscale_max_res": "1536", "zip_batch_size": 4, "folder_batch_size": 4, "attention_backend": DEFAULT_JOY_ATTENTION}
-    return {"model_quantization": "bf16", "downscale_max_res": "2048", "zip_batch_size": 6, "folder_batch_size": 6, "attention_backend": DEFAULT_JOY_ATTENTION}
+        return {"model_quantization": "bf16", "downscale_max_res": "1536", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
+    return {"model_quantization": "bf16", "downscale_max_res": "2048", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
 
 
 def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
@@ -148,15 +148,15 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
             "model_quantization": "bf16",
             "image_long_edge": 1024,
             "attention_backend": DEFAULT_QWEN_ATTENTION,
-            "file_batch_size": 2,
-            "folder_batch_size": 2,
+            "file_batch_size": 1,
+            "folder_batch_size": 1,
             "max_new_tokens": 4096,
         }
     return {
         "model_quantization": "bf16",
         "image_long_edge": 1280,
         "attention_backend": DEFAULT_QWEN_ATTENTION,
-        "file_batch_size": 4,
-        "folder_batch_size": 4,
+        "file_batch_size": 1,
+        "folder_batch_size": 1,
         "max_new_tokens": 6144,
     }
