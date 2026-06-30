@@ -8,6 +8,7 @@ import threading
 import time
 import traceback
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator, Sequence
@@ -144,6 +145,23 @@ class BetaGenerationStats:
     generated_tokens: int = 0
     elapsed_seconds: float = 0.0
     tokens_per_second: float = 0.0
+
+
+def _image_load_workers(num_workers: int | str | None, item_count: int) -> int:
+    try:
+        workers = int(num_workers or 0)
+    except (TypeError, ValueError):
+        workers = 0
+    return max(0, min(workers, max(0, item_count)))
+
+
+def _load_beta_images(paths: Sequence[Path], max_resolution: int | None, num_workers: int | str | None) -> list[Image.Image]:
+    path_list = list(paths)
+    workers = _image_load_workers(num_workers, len(path_list))
+    if workers <= 1:
+        return [load_rgb_image(path, max_resolution) for path in path_list]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="beta-image-load") as executor:
+        return list(executor.map(lambda path: load_rgb_image(path, max_resolution), path_list))
 
 
 def _generation_stats_text(stats: BetaGenerationStats) -> str:
@@ -746,6 +764,7 @@ class BetaEngine:
                             float(top_p),
                             int(max_new_tokens),
                             batch_size_value,
+                            int(_num_workers),
                             str(quant),
                             worker_device,
                             dict(optimizations),
@@ -868,7 +887,7 @@ class BetaEngine:
                             break
                         batch_paths = chunk[offset : offset + batch_size_value]
                         try:
-                            images = [load_rgb_image(path) for path in batch_paths]
+                            images = _load_beta_images(batch_paths, None, _num_workers)
                             log_event(
                                 f"Device {worker_device}: ZIP true batch {offset + 1}-{offset + len(batch_paths)} of {len(chunk)}.",
                                 "Joy Caption Beta 1",
@@ -988,7 +1007,6 @@ class BetaEngine:
         input_folder_str: str,
         output_folder_str: str,
         copy_images_cb: bool,
-        skip_exists_cb: bool,
         overwrite_caption_cb: bool,
         append_caption_cb: bool,
         remove_newlines_cb: bool,
@@ -1037,7 +1055,6 @@ class BetaEngine:
                             "input_folder": input_folder_str,
                             "output_folder": output_folder_str,
                             "copy_images": copy_images_cb,
-                            "skip_exists": skip_exists_cb,
                             "overwrite_caption": overwrite_caption_cb,
                             "append_caption": append_caption_cb,
                             "remove_newlines": remove_newlines_cb,
@@ -1152,7 +1169,6 @@ class BetaEngine:
                             str(input_dir),
                             str(output_dir),
                             bool(copy_images_cb),
-                            bool(skip_exists_cb),
                             bool(overwrite_caption_cb),
                             bool(append_caption_cb),
                             bool(remove_newlines_cb),
@@ -1166,6 +1182,7 @@ class BetaEngine:
                             float(top_p),
                             int(max_new_tokens),
                             batch_size_value,
+                            int(_num_workers),
                             str(quant),
                             worker_device,
                             dict(optimizations),
@@ -1321,7 +1338,11 @@ class BetaEngine:
                             batch_queue.put(("progress", line))
                             continue
                         try:
-                            images = [load_rgb_image(path, downscale if downscale > 0 else None) for path, _, _ in work_items]
+                            images = _load_beta_images(
+                                [path for path, _, _ in work_items],
+                                downscale if downscale > 0 else None,
+                                _num_workers,
+                            )
                             log_event(
                                 f"Device {worker_device}: folder true batch {offset + 1}-{offset + len(work_items)} of {len(chunk)}.",
                                 "Joy Caption Beta 1",
@@ -1455,7 +1476,6 @@ def _beta_folder_process_worker(
     input_dir_text: str,
     output_dir_text: str,
     copy_images_cb: bool,
-    skip_exists_cb: bool,
     overwrite_caption_cb: bool,
     append_caption_cb: bool,
     remove_newlines_cb: bool,
@@ -1469,6 +1489,7 @@ def _beta_folder_process_worker(
     top_p: float,
     max_new_tokens: int,
     batch_size_value: int,
+    num_workers: int,
     quant: str,
     worker_device: int | str,
     optimizations: dict[str, Any],
@@ -1526,7 +1547,11 @@ def _beta_folder_process_worker(
                     f"Device {worker_device}: Beta process true batch {offset + 1}-{offset + len(work_items)} of {len(paths)}.",
                     "Joy Caption Beta 1",
                 )
-                images = [load_rgb_image(path, downscale if downscale > 0 else None) for path, _, _ in work_items]
+                images = _load_beta_images(
+                    [path for path, _, _ in work_items],
+                    downscale if downscale > 0 else None,
+                    num_workers,
+                )
                 batch_started = time.time()
                 raw_captions = engine.generate_captions(
                     images,
@@ -1629,6 +1654,7 @@ def _beta_zip_process_worker(
     top_p: float,
     max_new_tokens: int,
     batch_size_value: int,
+    num_workers: int,
     quant: str,
     worker_device: int | str,
     optimizations: dict[str, Any],
@@ -1650,7 +1676,7 @@ def _beta_zip_process_worker(
         for offset in range(0, len(paths), batch_size_value):
             batch_paths = paths[offset : offset + batch_size_value]
             try:
-                images = [load_rgb_image(path) for path in batch_paths]
+                images = _load_beta_images(batch_paths, None, num_workers)
                 log_event(
                     f"Device {worker_device}: Beta ZIP process true batch {offset + 1}-{offset + len(batch_paths)} of {len(paths)}.",
                     "Joy Caption Beta 1",

@@ -42,7 +42,6 @@ ORDER = [
     "input_folder",
     "output_folder",
     "process_subfolders",
-    "skip_existing",
     "gpu_ids",
     "batch_size",
 ]
@@ -78,7 +77,6 @@ DEFAULTS: dict[str, Any] = {
     "input_folder": "",
     "output_folder": "",
     "process_subfolders": True,
-    "skip_existing": True,
     "gpu_ids": "0",
     "batch_size": 1,
 }
@@ -133,9 +131,6 @@ def build_tab(engine: Any) -> TabUI:
                         value=DEFAULTS["use_subprocess"],
                     )
                 with gr.Row():
-                    components["overwrite"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite"])
-                    components["append"] = gr.Checkbox(label="Append captions", value=DEFAULTS["append"])
-                with gr.Row():
                     components["remove_newlines"] = gr.Checkbox(label="Remove newlines", value=DEFAULTS["remove_newlines"])
                     components["cut_off_sentence"] = gr.Checkbox(label="Cut at last complete sentence", value=DEFAULTS["cut_off_sentence"])
                 with gr.Row():
@@ -173,8 +168,9 @@ def build_tab(engine: Any) -> TabUI:
             components["input_folder"] = gr.Textbox(label="Input Folder", value=DEFAULTS["input_folder"])
             components["output_folder"] = gr.Textbox(label="Output Folder", value=DEFAULTS["output_folder"])
         with gr.Row():
+            components["overwrite"] = gr.Checkbox(label="Overwrite batch captions", value=DEFAULTS["overwrite"])
+            components["append"] = gr.Checkbox(label="Append batch captions", value=DEFAULTS["append"])
             components["process_subfolders"] = gr.Checkbox(label="Process subfolders", value=DEFAULTS["process_subfolders"])
-            components["skip_existing"] = gr.Checkbox(label="Skip existing captions", value=DEFAULTS["skip_existing"])
             components["gpu_ids"] = gr.Textbox(
                 label="GPU IDs",
                 value=DEFAULTS["gpu_ids"],
@@ -191,6 +187,8 @@ def build_tab(engine: Any) -> TabUI:
 
     def run_single(image, *values):
         settings = settings_from_values(ORDER, values)
+        settings["overwrite"] = False
+        settings["append"] = False
         try:
             result = engine.caption_single(image, settings)
             caption, info = result.caption_with_status

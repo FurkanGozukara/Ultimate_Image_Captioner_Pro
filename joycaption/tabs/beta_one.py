@@ -37,7 +37,6 @@ ORDER = [
     "zip_batch_size",
     "folder_input",
     "folder_output",
-    "skip_exists",
     "overwrite_caption",
     "append_caption",
     "remove_newlines",
@@ -78,7 +77,6 @@ DEFAULTS: dict[str, Any] = {
     "zip_batch_size": 1,
     "folder_input": "",
     "folder_output": "",
-    "skip_exists": True,
     "overwrite_caption": False,
     "append_caption": False,
     "remove_newlines": True,
@@ -133,7 +131,7 @@ def build_tab(engine: Any) -> TabUI:
                         os.cpu_count() or 4,
                         value=DEFAULTS["zip_num_workers"],
                         step=1,
-                        label="DataLoader Workers",
+                        label="Image Load Workers",
                     )
                     components["zip_batch_size"] = gr.Slider(1, 32, value=DEFAULTS["zip_batch_size"], step=1, label="Batch Size")
                     with gr.Row():
@@ -149,7 +147,6 @@ def build_tab(engine: Any) -> TabUI:
                 components["folder_output"] = gr.Textbox(label="Output Folder", value=DEFAULTS["folder_output"])
             with gr.Accordion("Folder Options", open=True):
                 with gr.Row():
-                    components["skip_exists"] = gr.Checkbox(label="Skip existing outputs", value=DEFAULTS["skip_exists"])
                     components["process_subfolders"] = gr.Checkbox(label="Process subfolders", value=DEFAULTS["process_subfolders"])
                 with gr.Row():
                     components["overwrite_caption"] = gr.Checkbox(label="Overwrite captions", value=DEFAULTS["overwrite_caption"])
@@ -161,7 +158,7 @@ def build_tab(engine: Any) -> TabUI:
                         os.cpu_count() or 4,
                         value=DEFAULTS["folder_num_workers"],
                         step=1,
-                        label="DataLoader Workers",
+                        label="Image Load Workers",
                     )
                     components["folder_batch_size"] = gr.Slider(1, 32, value=DEFAULTS["folder_batch_size"], step=1, label="Batch Size")
             with gr.Row():
@@ -390,7 +387,6 @@ def build_tab(engine: Any) -> TabUI:
             components["folder_input"],
             components["folder_output"],
             components["save_image"],
-            components["skip_exists"],
             components["overwrite_caption"],
             components["append_caption"],
             components["remove_newlines"],

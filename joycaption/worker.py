@@ -204,7 +204,6 @@ def beta_folder(payload: dict[str, Any]) -> dict[str, Any]:
         settings["input_folder"],
         settings.get("output_folder") or "",
         bool(settings["copy_images"]),
-        bool(settings["skip_exists"]),
         bool(settings["overwrite_caption"]),
         bool(settings["append_caption"]),
         bool(settings["remove_newlines"]),

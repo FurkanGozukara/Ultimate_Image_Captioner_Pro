@@ -920,7 +920,6 @@ class QwenEngine:
         process_subfolders = bool(settings.get("process_subfolders", False))
         overwrite = bool(settings.get("overwrite_caption", False))
         append = bool(settings.get("append_caption", False))
-        skip_exists = bool(settings.get("skip_exists", True))
         save_boxed_images = bool(settings.get("auto_save_boxed_image", True)) and not bool(settings.get("dont_save_boxed_images", False))
         try:
             all_paths = discover_images(input_dir, include_subfolders=process_subfolders)
@@ -1284,7 +1283,6 @@ def _qwen_folder_process_worker(
     settings["use_subprocess"] = False
     overwrite = bool(settings.get("overwrite_caption", False))
     append = bool(settings.get("append_caption", False))
-    skip_exists = bool(settings.get("skip_exists", True))
     save_boxed_images = bool(settings.get("auto_save_boxed_image", True)) and not bool(settings.get("dont_save_boxed_images", False))
     batch_size = max(1, int(settings.get("folder_batch_size", 1) or 1))
     local_processed = 0

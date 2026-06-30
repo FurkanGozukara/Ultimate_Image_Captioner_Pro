@@ -1052,6 +1052,9 @@ class LegacySiglipEngine:
 
     def caption_single(self, image_input: Any, settings: dict[str, Any]) -> CaptionResult:
         log_event("Single image caption started.", self.config.title)
+        settings = dict(settings)
+        settings["overwrite"] = False
+        settings["append"] = False
         image_path = coerce_image_path(image_input, OUTPUTS_DIR / "temp")
         if image_path is None:
             raise ValueError("No input image selected.")
@@ -1153,7 +1156,6 @@ class LegacySiglipEngine:
         output_folder_text = str(settings.get("output_folder", "")).strip()
         output_folder = Path(output_folder_text) if output_folder_text else input_folder
         include_subfolders = bool(settings.get("process_subfolders", True))
-        skip_existing = bool(settings.get("skip_existing", True))
         overwrite = bool(settings.get("overwrite", False))
         append = bool(settings.get("append", False))
         preserve_subfolders = include_subfolders
@@ -1521,7 +1523,6 @@ def _legacy_folder_process_worker(
     settings["use_subprocess"] = False
     overwrite = bool(settings.get("overwrite", False))
     append = bool(settings.get("append", False))
-    skip_existing = bool(settings.get("skip_existing", True))
     batch_size = max(1, int(settings.get("batch_size", 1) or 1))
     max_resolution = int(settings.get("max_resolution", 1536) or 1536)
     local_processed = 0

@@ -87,7 +87,6 @@ ORDER = [
     "file_batch_size",
     "folder_input",
     "folder_output",
-    "skip_exists",
     "overwrite_caption",
     "append_caption",
     "process_subfolders",
@@ -143,7 +142,6 @@ DEFAULTS: dict[str, Any] = {
     "file_batch_size": DEFAULT_VRAM_SETTINGS["file_batch_size"],
     "folder_input": "",
     "folder_output": "",
-    "skip_exists": True,
     "overwrite_caption": False,
     "append_caption": False,
     "process_subfolders": False,
@@ -669,7 +667,6 @@ def build_tab(engine: Any) -> TabUI:
                     components["folder_input"] = gr.Textbox(label="Input Folder", value=DEFAULTS["folder_input"])
                     components["folder_output"] = gr.Textbox(label="Output Folder", value=DEFAULTS["folder_output"])
                 with gr.Row():
-                    components["skip_exists"] = gr.Checkbox(label="Skip existing outputs", value=DEFAULTS["skip_exists"])
                     components["process_subfolders"] = gr.Checkbox(label="Process subfolders", value=DEFAULTS["process_subfolders"])
                     components["dont_save_boxed_images"] = gr.Checkbox(label="Don't save boxed images", value=DEFAULTS["dont_save_boxed_images"])
                 with gr.Row():

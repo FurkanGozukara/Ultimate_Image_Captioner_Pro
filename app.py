@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import string
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -24,6 +26,91 @@ warnings.filterwarnings("ignore", category=StarletteDeprecationWarning)
 GLOBAL_ORDER = ["theme_mode"]
 GLOBAL_DEFAULTS = {"theme_mode": "dark"}
 FAVICON_PATH = BASE_DIR / "assets" / "favicon.svg"
+
+
+def _normalize_allowed_path(path: str | Path) -> str | None:
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.exists():
+            return None
+        return str(candidate.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _decode_mount_path(path_text: str) -> str:
+    return (
+        path_text.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _windows_drive_roots() -> list[str]:
+    roots: list[str] = []
+    try:
+        import ctypes
+
+        mask = int(ctypes.windll.kernel32.GetLogicalDrives())
+        for index, letter in enumerate(string.ascii_uppercase):
+            if mask & (1 << index):
+                roots.append(f"{letter}:\\")
+    except Exception:
+        for letter in string.ascii_uppercase:
+            root = f"{letter}:\\"
+            if os.path.exists(root):
+                roots.append(root)
+    return roots
+
+
+def _posix_mount_roots() -> list[str]:
+    roots = {"/"}
+    mountinfo = Path("/proc/self/mountinfo")
+    mounts = Path("/proc/mounts")
+    try:
+        if mountinfo.exists():
+            for line in mountinfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                fields = line.split()
+                if len(fields) >= 5:
+                    roots.add(_decode_mount_path(fields[4]))
+        elif mounts.exists():
+            for line in mounts.read_text(encoding="utf-8", errors="ignore").splitlines():
+                fields = line.split()
+                if len(fields) >= 2:
+                    roots.add(_decode_mount_path(fields[1]))
+    except OSError:
+        pass
+
+    volumes_dir = Path("/Volumes")
+    if volumes_dir.is_dir():
+        try:
+            roots.update(str(path) for path in volumes_dir.iterdir() if path.is_dir())
+        except OSError:
+            pass
+    return sorted(roots)
+
+
+def discover_gradio_allowed_paths() -> list[str]:
+    candidates: list[str | Path] = [BASE_DIR, OUTPUTS_DIR]
+    if TEST_IMAGES_DIR.exists():
+        candidates.append(TEST_IMAGES_DIR)
+    if os.name == "nt":
+        candidates.extend(_windows_drive_roots())
+    else:
+        candidates.extend(_posix_mount_roots())
+
+    allowed_paths: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = _normalize_allowed_path(candidate)
+        if normalized is None:
+            continue
+        key = os.path.normcase(os.path.normpath(normalized))
+        if key not in seen:
+            seen.add(key)
+            allowed_paths.append(normalized)
+    return allowed_paths
 
 
 def build_theme() -> gr.Theme:
@@ -261,9 +348,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    allowed_paths = [str(BASE_DIR), str(OUTPUTS_DIR)]
-    if TEST_IMAGES_DIR.exists():
-        allowed_paths.append(str(TEST_IMAGES_DIR))
+    allowed_paths = discover_gradio_allowed_paths()
     demo = build_app()
     launch_kwargs: dict[str, Any] = {
         "share": args.share,
