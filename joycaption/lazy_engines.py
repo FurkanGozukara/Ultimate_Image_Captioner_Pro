@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Generator, Sequence
 
@@ -9,14 +11,62 @@ from .prompt_options import build_beta_prompt
 from .subprocess_runner import cancel_active_workers, run_worker
 
 
+def _clear_python_and_cuda_cache() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+class _ModelSwitchRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._active_key: str | None = None
+        self._owners: dict[str, weakref.ReferenceType[Any]] = {}
+
+    def register(self, key: str, owner: Any) -> None:
+        with self._lock:
+            self._owners[key] = weakref.ref(owner)
+
+    def activate(self, key: str) -> None:
+        stale: list[str] = []
+        owners_to_clear: list[Any] = []
+        with self._lock:
+            if self._active_key == key:
+                return
+            for owner_key, owner_ref in self._owners.items():
+                owner = owner_ref()
+                if owner is None:
+                    stale.append(owner_key)
+                elif owner_key != key:
+                    owners_to_clear.append(owner)
+            for owner_key in stale:
+                self._owners.pop(owner_key, None)
+            self._active_key = key
+        for owner in owners_to_clear:
+            clear = getattr(owner, "clear_models", None)
+            if callable(clear):
+                clear()
+
+
+_MODEL_SWITCH_REGISTRY = _ModelSwitchRegistry()
+
+
 class LazyLegacyEngine:
     def __init__(self, variant: str, base_dir: Path = BASE_DIR) -> None:
         self.variant = variant
         self.base_dir = Path(base_dir)
         self._engine: Any | None = None
         self._lock = threading.RLock()
+        self._registry_key = f"legacy:{variant}"
+        _MODEL_SWITCH_REGISTRY.register(self._registry_key, self)
 
     def _get_engine(self) -> Any:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         with self._lock:
             if self._engine is not None:
                 return self._engine
@@ -35,6 +85,19 @@ class LazyLegacyEngine:
             else:
                 raise ValueError(f"Unknown legacy variant: {self.variant}")
             return self._engine
+
+    def clear_models(self) -> None:
+        with self._lock:
+            engine = self._engine
+            self._engine = None
+        if engine is not None:
+            clear = getattr(engine, "clear_models", None)
+            if callable(clear):
+                clear()
+            bundles = getattr(engine, "_bundles", None)
+            if isinstance(bundles, dict):
+                bundles.clear()
+        _clear_python_and_cuda_cache()
 
     def stop_batch(self) -> str:
         if self._engine is None:
@@ -55,6 +118,7 @@ class LazyLegacyEngine:
         return message if count else "No batch is active."
 
     def caption_single(self, image_input: Any, settings: dict[str, Any]) -> CaptionResult:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if settings.get("use_subprocess", False):
             image_path = coerce_image_path(image_input, OUTPUTS_DIR / "temp")
             if image_path is None:
@@ -79,6 +143,7 @@ class LazyLegacyEngine:
         return self._get_engine().caption_single(image_input, settings)
 
     def batch_folder(self, settings: dict[str, Any]) -> Generator[str, None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if settings.get("use_subprocess", False):
             yield "Starting subprocess batch. The child process will exit when the run ends."
             try:
@@ -105,14 +170,27 @@ class LazyBetaEngine:
         self.model_path = Path(model_path)
         self._engine: Any | None = None
         self._lock = threading.RLock()
+        self._registry_key = f"beta:{self.model_path.resolve()}"
+        _MODEL_SWITCH_REGISTRY.register(self._registry_key, self)
 
     def _get_engine(self) -> Any:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         with self._lock:
             if self._engine is None:
                 from .engines.beta import BetaEngine
 
                 self._engine = BetaEngine(self.model_path)
             return self._engine
+
+    def clear_models(self) -> None:
+        with self._lock:
+            engine = self._engine
+            self._engine = None
+        if engine is not None:
+            clear = getattr(engine, "clear_models", None)
+            if callable(clear):
+                clear()
+        _clear_python_and_cuda_cache()
 
     def stop_batch(self) -> str:
         if self._engine is None:
@@ -160,6 +238,7 @@ class LazyBetaEngine:
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str, str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
             yield from self._get_engine().caption_single(
                 input_image,
@@ -242,6 +321,7 @@ class LazyBetaEngine:
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str | None, str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
             yield from self._get_engine().process_batch_files_to_zip(
                 files_list,
@@ -333,6 +413,7 @@ class LazyBetaEngine:
         attention_backend: str = "sdpa",
         use_liger_kernel: bool = True,
     ) -> Generator[tuple[str, str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not use_subprocess:
             yield from self._get_engine().run_batch_folder_processing(
                 input_folder_str,
@@ -423,14 +504,27 @@ class LazyQwenEngine:
         self.model_path = Path(model_path)
         self._engine: Any | None = None
         self._lock = threading.RLock()
+        self._registry_key = f"qwen:{self.model_path.resolve()}"
+        _MODEL_SWITCH_REGISTRY.register(self._registry_key, self)
 
     def _get_engine(self) -> Any:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         with self._lock:
             if self._engine is None:
                 from .engines.qwen import QwenEngine
 
                 self._engine = QwenEngine(self.model_path)
             return self._engine
+
+    def clear_models(self) -> None:
+        with self._lock:
+            engine = self._engine
+            self._engine = None
+        if engine is not None:
+            clear = getattr(engine, "clear_models", None)
+            if callable(clear):
+                clear()
+        _clear_python_and_cuda_cache()
 
     def cancel_single(self) -> str:
         count, message = cancel_active_workers(["qwen_single"])
@@ -446,6 +540,7 @@ class LazyQwenEngine:
         return html_message("info", message if count else "No Qwen batch is active.")
 
     def caption_single(self, input_image: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not settings.get("use_subprocess", False):
             yield from self._get_engine().caption_single(input_image, settings)
             return
@@ -477,6 +572,7 @@ class LazyQwenEngine:
         files_list: Sequence[Any] | None,
         settings: dict[str, Any],
     ) -> Generator[tuple[str, str | None, str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not settings.get("use_subprocess", False):
             yield from self._get_engine().process_batch_files_to_zip(files_list, settings)
             return
@@ -497,6 +593,7 @@ class LazyQwenEngine:
             yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen subprocess ZIP batch failed.")
 
     def run_batch_folder_processing(self, settings: dict[str, Any]) -> Generator[tuple[str, str], None, None]:
+        _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not settings.get("use_subprocess", False):
             yield from self._get_engine().run_batch_folder_processing(settings)
             return
