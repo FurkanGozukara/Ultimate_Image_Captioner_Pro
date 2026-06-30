@@ -50,7 +50,14 @@ from ..common import (
     vram_usage_text,
     write_generation_metadata,
 )
-from ..json_tools import boxed_image_png_bytes, json_to_element_rows, normalize_json_output, overlay_html, save_boxed_image
+from ..json_tools import (
+    boxed_image_png_bytes,
+    json_to_element_rows,
+    normalize_json_output,
+    official_v1_warnings_require_retry,
+    overlay_html,
+    save_boxed_image,
+)
 from ..qwen_presets import OFFICIAL_V1_PRESET_ID
 
 
@@ -435,13 +442,22 @@ class QwenEngine:
             )
             retries = int(settings.get("json_retries", 0) or 0)
             attempt = 0
-            while parsed is None and attempt < retries:
+            preset_id = str(settings.get("preset_id") or "")
+            while (
+                parsed is None
+                or (preset_id.startswith(("i4_official_v1", "i4_json_")) and official_v1_warnings_require_retry(warnings))
+            ) and attempt < retries:
                 attempt += 1
+                current_json = final
+                if parsed is not None:
+                    current_json = json.dumps(parsed, ensure_ascii=False, indent=2)
                 repair_prompt = (
-                    "The previous output was invalid for this reason:\n"
+                    "The previous output did not satisfy the required Ideogram 4 / v1 JSON schema for this reason:\n"
                     + "\n".join(warnings)
-                    + "\n\nRepair it. Return one valid JSON object only. Do not add markdown, explanations, comments, or new image details.\n\n"
-                    + final
+                    + "\n\nRepair it using the image. Return one valid JSON object only. Do not add markdown, explanations, comments, labels, or extra text. "
+                    + "Every element must include a tight normalized bbox in official [y_min,x_min,y_max,x_max] order. "
+                    + "If a detail cannot be boxed, merge it into background or another element description instead of leaving bbox missing.\n\n"
+                    + current_json
                 )
                 retry_settings = dict(settings)
                 retry_settings["prompt"] = repair_prompt

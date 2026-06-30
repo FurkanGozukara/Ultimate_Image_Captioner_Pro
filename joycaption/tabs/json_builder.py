@@ -29,6 +29,17 @@ BBOX_ORDER_CHOICES = [
     ("y_min, x_min, y_max, x_max", "yxyx"),
     ("x_min, y_min, x_max, y_max", "xyxy"),
 ]
+TABLE_COLUMN_CLASSES = [
+    "type",
+    "bbox",
+    "bbox",
+    "bbox",
+    "bbox",
+    "caption",
+    "box-title",
+    "text",
+]
+WRAPPING_TABLE_COLUMNS = {5, 7}
 ASPECT_RATIO_CHOICES = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "Custom"]
 DEFAULT_BUILDER_ROW = ["obj", 80, 80, 360, 360, "", "box 1", ""]
 BUILDER_PRESET_ID = "i4_official_v1_app_compare"
@@ -71,6 +82,18 @@ if (!element.dataset.jcJsonTableBound) {
     return rows;
   };
 
+  const resizeTextarea = (textarea) => {
+    textarea.style.height = "auto";
+    const maxHeight = Number.parseFloat(getComputedStyle(textarea).maxHeight) || 160;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  };
+
+  const resizeTextareas = (root = element) => {
+    root.querySelectorAll(".jc-json-table-editor textarea").forEach(resizeTextarea);
+  };
+
   const commit = (target) => {
     const root = target.closest(".jc-json-table-editor");
     if (!root) return;
@@ -96,6 +119,7 @@ if (!element.dataset.jcJsonTableBound) {
     const target = event.target.closest(".jc-json-table-editor [data-row-index][data-col-index]");
     if (!target) return;
     const root = target.closest(".jc-json-table-editor");
+    if (target.tagName === "TEXTAREA") resizeTextarea(target);
     syncSnapshot(readRows(root));
     clearTimeout(root._jcCommitTimer);
     root._jcCommitTimer = setTimeout(() => commit(target), 250);
@@ -113,8 +137,16 @@ if (!element.dataset.jcJsonTableBound) {
     element.querySelectorAll(".jc-json-table-editor").forEach((root) => syncSnapshot(readRows(root)));
   }, true);
 
+  new MutationObserver(() => queueMicrotask(() => resizeTextareas())).observe(element, {
+    childList: true,
+    subtree: true,
+  });
+
   queueMicrotask(() => {
-    element.querySelectorAll(".jc-json-table-editor").forEach((root) => syncSnapshot(readRows(root)));
+    element.querySelectorAll(".jc-json-table-editor").forEach((root) => {
+      resizeTextareas(root);
+      syncSnapshot(readRows(root));
+    });
   });
 }
 """
@@ -243,10 +275,19 @@ def _table_editor_html(rows: Any, selected: Any, bbox_order: str = DEFAULT_BBOX_
     parts = [
         f'<div class="jc-json-table-editor" data-rows="{rows_json}">',
         "<table>",
-        "<thead><tr>",
+        "<colgroup>",
     ]
-    for header in headers:
-        parts.append(f"<th>{html.escape(str(header))}</th>")
+    for column_class in TABLE_COLUMN_CLASSES[: len(headers)]:
+        parts.append(f'<col class="jc-json-col-{column_class}">')
+    parts.extend(
+        [
+            "</colgroup>",
+            "<thead><tr>",
+        ]
+    )
+    for col_index, header in enumerate(headers):
+        column_class = TABLE_COLUMN_CLASSES[col_index] if col_index < len(TABLE_COLUMN_CLASSES) else "default"
+        parts.append(f'<th class="jc-json-cell-{column_class}">{html.escape(str(header))}</th>')
     parts.append("</tr></thead><tbody>")
     rendered = 0
     for row_index in indices:
@@ -259,11 +300,20 @@ def _table_editor_html(rows: Any, selected: Any, bbox_order: str = DEFAULT_BBOX_
         parts.append("<tr>")
         for col_index, value in enumerate(values[: len(headers)]):
             input_type = "number" if 1 <= col_index <= 4 else "text"
+            column_class = TABLE_COLUMN_CLASSES[col_index] if col_index < len(TABLE_COLUMN_CLASSES) else "default"
             escaped_value = html.escape(_cell_text(value), quote=True)
-            parts.append(
-                f'<td><input type="{input_type}" value="{escaped_value}" '
-                f'data-row-index="{row_index}" data-col-index="{col_index}" /></td>'
-            )
+            parts.append(f'<td class="jc-json-cell-{column_class}">')
+            if col_index in WRAPPING_TABLE_COLUMNS:
+                parts.append(
+                    f'<textarea rows="1" data-row-index="{row_index}" '
+                    f'data-col-index="{col_index}">{escaped_value}</textarea>'
+                )
+            else:
+                parts.append(
+                    f'<input type="{input_type}" value="{escaped_value}" '
+                    f'data-row-index="{row_index}" data-col-index="{col_index}" />'
+                )
+            parts.append("</td>")
         parts.append("</tr>")
     if rendered == 0:
         parts.append(f'<tr><td colspan="{len(headers)}" class="jc-json-table-empty">No visible boxes.</td></tr>')

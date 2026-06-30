@@ -29,6 +29,16 @@ BBOX_ORDER_CHOICES = [
     ("y_min, x_min, y_max, x_max", "yxyx"),
     ("x_min, y_min, x_max, y_max", "xyxy"),
 ]
+ELEMENT_COLUMN_WIDTHS = [
+    "68px",
+    "70px",
+    "70px",
+    "70px",
+    "70px",
+    "480px",
+    "108px",
+    "300px",
+]
 
 ORDER = [
     "vram_preset",
@@ -295,6 +305,7 @@ COPY_JSON_HTML = """
     <rect x="9" y="9" width="11" height="11" rx="2"></rect>
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
   </svg>
+  <span class="jc-copy-json-label">Copy JSON</span>
 </button>
 """
 
@@ -304,18 +315,20 @@ if (!element.dataset.jcCopyJsonBound) {
   element.dataset.jcCopyJsonBound = "1";
 
   const button = element.querySelector(".jc-copy-json-button");
+  const label = button?.querySelector(".jc-copy-json-label");
   const textareaSelector = "#jc-qwen-generated-json textarea";
 
   const setState = (state) => {
     if (!button) return;
     button.classList.remove("is-copied", "is-failed");
     if (state) button.classList.add(state);
-    if (state === "is-copied") button.title = "Copied";
-    else if (state === "is-failed") button.title = "Copy failed";
-    else button.title = "Copy JSON";
+    const message = state === "is-copied" ? "Copied" : state === "is-failed" ? "Copy failed" : "Copy JSON";
+    if (label) label.textContent = message;
+    button.title = message;
+    button.setAttribute("aria-label", message);
     window.clearTimeout(button._jcCopyTimer);
     if (state) {
-      button._jcCopyTimer = window.setTimeout(() => setState(""), 1200);
+      button._jcCopyTimer = window.setTimeout(() => setState(""), 1400);
     }
   };
 
@@ -502,6 +515,8 @@ def build_tab(engine: Any) -> TabUI:
                 max_height=320,
                 datatype=["str", "number", "number", "number", "number", "str", "str", "str"],
                 wrap=True,
+                line_breaks=True,
+                column_widths=ELEMENT_COLUMN_WIDTHS,
                 elem_classes=["jc-qwen-elements-wide"],
             )
 

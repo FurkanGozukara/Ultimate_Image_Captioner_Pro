@@ -144,7 +144,7 @@ def validate_ideogram_json(data: dict[str, Any]) -> list[str]:
     return validate_official_v1_json(data)
 
 
-def validate_official_v1_json(data: dict[str, Any]) -> list[str]:
+def validate_official_v1_json(data: dict[str, Any], require_bboxes: bool = False) -> list[str]:
     warnings: list[str] = []
     expected_keys = ["aspect_ratio", "high_level_description", "compositional_deconstruction"]
     actual_keys = list(data.keys())
@@ -188,6 +188,11 @@ def validate_official_v1_json(data: dict[str, Any]) -> list[str]:
             warnings.append(f"Element {index} has non-official key(s): " + ", ".join(f'\"{key}\"' for key in extra_keys) + ".")
         bbox = element.get("bbox")
         if bbox is None:
+            if require_bboxes:
+                warnings.append(
+                    f'Element {index} is missing "bbox"; official v1 elements must include tight normalized '
+                    "[y_min,x_min,y_max,x_max] boxes. Move non-localizable details into background or desc."
+                )
             continue
         valid, message = validate_bbox(bbox)
         if not valid:
@@ -203,9 +208,19 @@ def normalize_json_output(text: str, preset_id: str = "", compact: bool = False)
         parsed = coerce_official_v1_payload(parsed, rows=None)
         parsed, repair_warnings = repair_official_v1_bbox_order(parsed)
         warnings.extend(repair_warnings)
-        warnings.extend(validate_official_v1_json(parsed))
+        warnings.extend(validate_official_v1_json(parsed, require_bboxes=True))
     normalized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if compact else json.dumps(parsed, ensure_ascii=False, indent=2)
     return normalized, parsed, warnings
+
+
+def official_v1_warnings_require_retry(warnings: Any) -> bool:
+    for warning in warnings or []:
+        text = str(warning)
+        if 'missing "bbox"' in text:
+            return True
+        if re.search(r"Element \d+ bbox:", text):
+            return True
+    return False
 
 
 def validate_bbox(value: Any) -> tuple[bool, str]:

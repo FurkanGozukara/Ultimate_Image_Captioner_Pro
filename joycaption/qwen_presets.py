@@ -54,7 +54,7 @@ Use object elements as:
 Use readable text elements as:
 {"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"EXACT VISIBLE TEXT","desc":"..."}
 
-Bboxes use normalized integer coordinates from 0 to 1000 in official Ideogram order [y_min, x_min, y_max, x_max]. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. The origin is top-left. Omit "bbox" when localization is unreliable.
+Bboxes use normalized integer coordinates from 0 to 1000 in official Ideogram order [y_min, x_min, y_max, x_max]. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. The origin is top-left. Every element must include a tight bbox. If a detail cannot be localized reliably, merge it into "background" or another element "desc" instead of creating a bbox-less element.
 
 "aspect_ratio" must be a concrete W:H string for the input image. Never output "auto".
 
@@ -66,7 +66,7 @@ Element "desc" values are concrete visible-only captions for independently place
 
 For text elements, "text" is only the literal readable characters in the image. Preserve capitalization, punctuation, symbols, diacritics, numbers, and line breaks. If text is unclear, do not guess it.
 
-If any preset-specific text mentions "style_description", element "color_palette", or an app-specific bbox order, treat that wording as legacy and ignore it. The output must follow the official schema above."""
+If any preset-specific text mentions "style_description", element "color_palette", optional bboxes, omitted bboxes, or an app-specific bbox order, treat that wording as legacy and ignore it. The output must follow the official schema above."""
 
 
 @dataclass(frozen=True)
@@ -253,13 +253,13 @@ Use element type "obj" for subjects and objects:
 Use element type "text" for readable text:
 {"type":"text","bbox":[y_min,x_min,y_max,x_max],"text":"...","desc":"..."}
 
-Bboxes must use normalized integer coordinates from 0 to 1000 in official Ideogram order: [y_min, x_min, y_max, x_max], with the origin at the top-left. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. Keep boxes tight and plausible. Omit "bbox" when an element cannot be localized reliably.
+Bboxes must use normalized integer coordinates from 0 to 1000 in official Ideogram order: [y_min, x_min, y_max, x_max], with the origin at the top-left. bbox[0] and bbox[2] are vertical y coordinates; bbox[1] and bbox[3] are horizontal x coordinates. Do not output [x_min, y_min, x_max, y_max]. Every element must include a tight, plausible bbox. If a detail cannot be localized reliably, merge it into "background" or another element "desc" instead of creating a bbox-less element.
 
 Element descriptions should be concrete and visible-only. Identity first, then major attributes. For people, include visible skin tone, hair color and style, clothing colors, expression or gaze, pose, accessories, and held props when visible. For objects, include shape, material, color, distinctive parts, labels, logos, or markings when visible. Do not include shadows, camera/render jargon, hidden context, backstory, guessed names, guessed brands, or unreadable text guesses.
 
 For text elements, copy only legible text exactly as it appears. Preserve capitalization, punctuation, numbers, symbols, diacritics, and line breaks. If text is unclear, describe it as unreadable, cropped, blurred, or stylized marks instead of guessing.
 
-Prefer complete but not bloated output. Use bboxes for portrait subjects, products, signs, logos, text blocks, and distinct placeable objects. Omit bboxes for atmosphere, texture fields, dense crowds, repeated tiny details, stars, foliage masses, and particles.
+Prefer complete but not bloated output. Create elements only for localizable portrait subjects, products, signs, logos, text blocks, and distinct placeable objects, and include bboxes for all of them. Put atmosphere, texture fields, dense crowds, repeated tiny details, stars, foliage masses, and particles into "background" or another element "desc" instead of making bbox-less elements.
 """
     return QwenPreset(
         id=OFFICIAL_V1_PRESET_ID,
@@ -303,6 +303,7 @@ def _compose_prompt(preset_id: str, output_format: str, block_prompt: str, bases
             "Final schema reminder: output exactly official Ideogram 4 / v1 JSON with only "
             '"aspect_ratio", "high_level_description", and "compositional_deconstruction". '
             'Use element "desc" for visual captions. Use element "text" only for literal readable text. '
+            'Every element must include a tight normalized "bbox"; merge non-localizable details into background or an existing desc. '
             'Never include "style_description", "color_palette", "box_title", markdown, or comments.'
         )
         return "\n\n".join(part for part in [OFFICIAL_V1_SCHEMA_OVERRIDE, block_prompt, final_reminder] if part).strip()

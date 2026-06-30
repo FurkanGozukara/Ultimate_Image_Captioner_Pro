@@ -162,7 +162,8 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 .jc-generated-json-header {
   align-items: center !important;
   gap: 8px !important;
-  margin-bottom: 4px;
+  flex-wrap: nowrap !important;
+  margin-bottom: 6px;
 }
 
 .jc-generated-json-title {
@@ -176,7 +177,9 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 
 .jc-copy-json-control {
   flex: 0 0 auto !important;
-  min-width: 34px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin-left: auto;
 }
 
 .jc-copy-json-control .block,
@@ -190,37 +193,51 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 }
 
 .jc-copy-json-button {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid #0891b2;
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.82);
-  color: #e2e8f0;
+  background: #0891b2;
+  color: #ffffff;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
 .jc-copy-json-button:hover {
-  border-color: #38bdf8;
-  background: rgba(14, 116, 144, 0.42);
+  border-color: #0e7490;
+  background: #0e7490;
   color: #ffffff;
 }
 
+.jc-copy-json-button:active {
+  transform: translateY(1px);
+}
+
 .jc-copy-json-button.is-copied {
-  border-color: #22c55e;
-  color: #bbf7d0;
+  border-color: #16a34a;
+  background: #16a34a;
+  color: #ffffff;
 }
 
 .jc-copy-json-button.is-failed {
-  border-color: #f87171;
-  color: #fecaca;
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #ffffff;
 }
 
 .jc-copy-json-button svg {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -238,6 +255,18 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 
 .jc-qwen-elements-wide {
   margin-top: 10px;
+}
+
+.jc-qwen-elements-wide [data-col="5"] .wrap,
+.jc-qwen-elements-wide [data-col="7"] .wrap {
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.jc-qwen-elements-wide [data-col="5"] .cell-wrap,
+.jc-qwen-elements-wide [data-col="7"] .cell-wrap {
+  align-items: flex-start !important;
 }
 
 .jc-hidden-sync {
@@ -301,6 +330,12 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 }
 
 .jc-json-table-editor {
+  --jc-json-col-type: 68px;
+  --jc-json-col-bbox: 70px;
+  --jc-json-col-caption: 480px;
+  --jc-json-col-box-title: 108px;
+  --jc-json-col-text: 300px;
+  --jc-json-table-width: 1236px;
   max-height: 320px;
   overflow: auto;
   border: 1px solid rgba(148, 163, 184, 0.28);
@@ -314,16 +349,38 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
 }
 
 .jc-json-table-editor table {
-  width: 100%;
+  width: var(--jc-json-table-width);
+  min-width: var(--jc-json-table-width);
   border-collapse: collapse;
   table-layout: fixed;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.jc-json-table-editor .jc-json-col-type {
+  width: var(--jc-json-col-type);
+}
+
+.jc-json-table-editor .jc-json-col-bbox {
+  width: var(--jc-json-col-bbox);
+}
+
+.jc-json-table-editor .jc-json-col-caption {
+  width: var(--jc-json-col-caption);
+}
+
+.jc-json-table-editor .jc-json-col-box-title {
+  width: var(--jc-json-col-box-title);
+}
+
+.jc-json-table-editor .jc-json-col-text {
+  width: var(--jc-json-col-text);
 }
 
 .jc-json-table-editor th,
 .jc-json-table-editor td {
   border: 1px solid rgba(148, 163, 184, 0.24);
   padding: 0;
+  vertical-align: top;
 }
 
 .jc-json-table-editor th {
@@ -335,21 +392,41 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   color: #f8fafc;
   text-align: left;
   font-weight: 800;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.jc-json-table-editor input {
+.jc-json-table-editor input,
+.jc-json-table-editor textarea {
   width: 100%;
   min-width: 0;
-  height: 38px;
+  min-height: 38px;
   border: 0;
   border-radius: 0;
   background: transparent;
   color: #f8fafc;
   padding: 6px 8px;
   font: inherit;
+  box-sizing: border-box;
 }
 
-.jc-json-table-editor input:focus {
+.jc-json-table-editor input {
+  height: 38px;
+}
+
+.jc-json-table-editor textarea {
+  display: block;
+  height: auto;
+  max-height: 160px;
+  line-height: 1.4;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.jc-json-table-editor input:focus,
+.jc-json-table-editor textarea:focus {
   outline: 2px solid #f97316;
   outline-offset: -2px;
   background: rgba(249, 115, 22, 0.1);
