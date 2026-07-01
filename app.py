@@ -200,14 +200,14 @@ def build_app() -> gr.Blocks:
             with gr.Tabs(elem_id="jc-main-tabs", elem_classes=["jc-main-tabs"]):
                 with gr.Tab("Qwen3 VL 8B Instruct", render_children=True):
                     tabs.append(qwen.build_tab(qwen_engine))
-                with gr.Tab("Joy Caption Pre Alpha", render_children=True):
-                    tabs.append(pre_alpha.build_tab(pre_engine))
-                with gr.Tab("Joy Caption Alpha 1", render_children=True):
-                    tabs.append(alpha_one.build_tab(alpha1_engine))
-                with gr.Tab("Joy Caption Alpha 2", render_children=True):
-                    tabs.append(alpha_two.build_tab(alpha2_engine))
                 with gr.Tab("Joy Caption Beta 1", render_children=True):
                     tabs.append(beta_one.build_tab(beta_engine))
+                with gr.Tab("Joy Caption Alpha 2", render_children=True):
+                    tabs.append(alpha_two.build_tab(alpha2_engine))
+                with gr.Tab("Joy Caption Alpha 1", render_children=True):
+                    tabs.append(alpha_one.build_tab(alpha1_engine))
+                with gr.Tab("Joy Caption Pre Alpha", render_children=True):
+                    tabs.append(pre_alpha.build_tab(pre_engine))
                 with gr.Tab("JSON Prompt Builder", render_children=True):
                     tabs.append(json_builder.build_tab())
                 with gr.Tab("Saved Outputs", render_children=True):
