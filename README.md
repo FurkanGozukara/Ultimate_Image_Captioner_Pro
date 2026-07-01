@@ -13,7 +13,7 @@
     *   Python 3.11.x, FFmpeg, CUDA 13, cuDNN 9.17 or above, C++ tools, MSVC and Git        
         *   Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver            
         *   Follow this requirements tutorial video exactly : [https://youtu.be/DrhUHnYfwC0](https://youtu.be/DrhUHnYfwC0)            
-        *   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/posts/click-to-open-post-used-in-tutorial-111553210](https://www.patreon.com/posts/click-to-open-post-used-in-tutorial-111553210)
+        *   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/posts/111553210](https://www.patreon.com/posts/111553210)
             
 *   **For RunPod, SimplePod, Massed Compute and Linux please follow:**    
     *   Massed\_Compute\_Instructions\_READ.txt        
