@@ -3,7 +3,8 @@
 
 *   With Ideogram 4 model as you know JSON prompting is now a thing and we need JSON prompts for both inference and training    
 *   Therefore, a new app was necessary to solve this issue and I built the very best local app out there for this task    
-*   Full features of the app introduced below with screenshots so please read    
+*   Full features of the app introduced below with screenshots so please read
+   *   The installer will auto download all the necessary models with 16 connections + SHA256 hash verification
 *   Hopefully a tutorial video coming as well    
 *   SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added    
     *   SwarmUI : [https://www.patreon.com/SECourses/posts/114517862](https://www.patreon.com/SECourses/posts/114517862)        
