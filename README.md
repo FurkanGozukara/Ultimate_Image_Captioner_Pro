@@ -1,20 +1,25 @@
 # Made for SECourses Premium Members : https://www.patreon.com/posts/162527725
 ## Download Link : https://www.patreon.com/posts/162527725
 
-- With Ideogram 4 model as you know JSON prompting is now a thing and we need JSON prompts for both inference and training
-- Therefore, a new app was necessary to solve this issue and I built the very best local app out there for this task
-- Full features of the app introduced below with screenshots so please read
-- Hopefully a tutorial video coming as well
-- SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added
-  - SwarmUI : https://www.patreon.com/posts/114517862
-  - ComfyUI : https://www.patreon.com/SECourses/posts/105023709
-
-## Windows Requirements
-
-- Python 3.11.x, FFmpeg, CUDA 13, cuDNN 9.17 or above, C++ tools, MSVC and Git
-- Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver
-- Follow this requirements tutorial video exactly : https://youtu.be/DrhUHnYfwC0
-- Follow its updated post with links and screenshots exactly : https://www.patreon.com/posts/click-to-open-post-used-in-tutorial-111553210
+*   With Ideogram 4 model as you know JSON prompting is now a thing and we need JSON prompts for both inference and training    
+*   Therefore, a new app was necessary to solve this issue and I built the very best local app out there for this task    
+*   Full features of the app introduced below with screenshots so please read    
+*   Hopefully a tutorial video coming as well    
+*   SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added    
+    *   SwarmUI : [https://www.patreon.com/posts/114517862](https://www.patreon.com/posts/114517862)        
+    *   ComfyUI : [https://www.patreon.com/SECourses/posts/105023709](https://www.patreon.com/SECourses/posts/105023709)
+        
+*   **Windows Requirements**    
+    *   Python 3.11.x, FFmpeg, CUDA 13, cuDNN 9.17 or above, C++ tools, MSVC and Git        
+        *   Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver            
+        *   Follow this requirements tutorial video exactly : [https://youtu.be/DrhUHnYfwC0](https://youtu.be/DrhUHnYfwC0)            
+        *   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/posts/click-to-open-post-used-in-tutorial-111553210](https://www.patreon.com/posts/click-to-open-post-used-in-tutorial-111553210)
+            
+*   **For RunPod, SimplePod, Massed Compute and Linux please follow:**    
+    *   Massed\_Compute\_Instructions\_READ.txt        
+    *   Runpod\_SimplePod\_Ultimate\_Caption\_Instructions.txt        
+*   **The application runs on Torch 2.11 with CUDA 13, supports literally every GPU out there including server GPUs**    
+    *   Moreover, we are using latest libraries such as Triton 3.7.1, Transformers 5.12.1, Bitsandbytes 0.49.2 thus we have the ultimate speed
 
 ## Ultimate Image Captioner Pro Features
 
