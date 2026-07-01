@@ -1,0 +1,22 @@
+{
+  "order": 26,
+  "id": "txt_flux2_long_detailed_caption",
+  "label": "Prompt Text - Long Detailed Caption",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "txt",
+  "extension": ".txt",
+  "system_prompt": "You are a precise image captioning engine for machine learning datasets. Your job is to describe only visible image content in a stable, factual, training-useful way. Do not provide analysis, hidden reasoning, caveats, markdown, or extra commentary. Follow the requested output format exactly.",
+  "user_prompt_template": "Write one natural-language training caption for this image.\n\nOutput only the caption text. Do not output JSON, markdown, bullets, labels, quotation marks, analysis, or extra commentary.\n\nLanguage: {{OUTPUT_LANGUAGE}}.\n\nIf a trigger phrase is provided, begin the caption with it exactly:\n{{TRIGGER_PHRASE}}.\n\nIf no trigger phrase is provided, start directly with the image description.\n\nDescribe only what is visibly present in the image. Do not invent objects, background details, story, atmosphere, names, brands, text, or context that cannot be clearly seen.\n\nFor real people, do not identify the person by name. Describe visible appearance, clothing, pose, expression, hairstyle, accessories, and broad visible attributes only.\n\nFor fictional characters, brands, products, logos, landmarks, and readable text, name them only when visually clear and unambiguous. If uncertain, describe visible features instead of guessing.\n\nCopy readable text exactly as it appears. If text is not readable, say unreadable text, blurred text, cropped text, or stylized marks are visible instead of guessing.\n\nUse complete natural language, not comma-separated tags, unless the preset specifically requests tags.\n\nKeep the caption factual, useful, and concise. Avoid filler words such as beautiful, masterpiece, high quality, stunning, amazing, aesthetic, vibe, dramatic, cinematic, or ultra detailed unless they describe a concrete visible property.\n\nPreset focus: long detailed caption.\n\nWrite 4 to 8 concise sentences. Cover main subject, secondary subjects, action, pose, expression, clothing, accessories, important objects, setting, foreground/midground/background, composition, camera/view angle, lighting, color, medium, and readable text.\n\nStay factual and avoid story. Do not create a list. Do not include uncertain details as facts.",
+  "max_new_tokens": 1024,
+  "temperature": 0.1,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "txt_flux2_long_detailed_caption",
+    "output_format": "txt",
+    "extension": ".txt",
+    "max_new_tokens": "768_to_1024",
+    "temperature": "0.1",
+    "caption_length": "4_to_8_sentences"
+  }
+}

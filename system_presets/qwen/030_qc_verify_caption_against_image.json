@@ -1,0 +1,21 @@
+{
+  "order": 30,
+  "id": "qc_verify_caption_against_image",
+  "label": "Qc - Verify Caption Against Image",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "json",
+  "extension": ".json",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "Compare the provided caption against the image.\n\nExisting caption:\n{{EXISTING_CAPTION}}\n\nReturn valid JSON only with this exact structure:\n{\n  \"verdict\": \"pass\" | \"needs_fix\" | \"fail\",\n  \"unsupported_claims\": [],\n  \"missing_important_visible_details\": [],\n  \"text_errors\": [],\n  \"identity_or_sensitive_inference_errors\": [],\n  \"suggested_caption\": \"\"\n}\n\nRules:\n- Unsupported claims are details in the caption that are not visible in the image.\n- Missing details are important visible subjects, objects, text, or setting information absent from the caption.\n- Text errors are readable text copied incorrectly or guessed.\n- Identity or sensitive inference errors include real-person names, private identity, nationality, ethnicity, personality, profession, or other unsupported inferences.\n- The suggested caption should be a corrected plain-text caption only if the verdict is \"needs_fix\" or \"fail\".\n- Do not add details that are not visible.",
+  "max_new_tokens": 1024,
+  "temperature": 0.0,
+  "image_long_edge": 1024,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "qc_verify_caption_against_image",
+    "output_format": "json",
+    "max_new_tokens": "1024",
+    "temperature": "0.0_to_0.1",
+    "inputs": ""
+  }
+}

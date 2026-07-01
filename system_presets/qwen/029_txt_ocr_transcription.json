@@ -1,0 +1,22 @@
+{
+  "order": 29,
+  "id": "txt_ocr_transcription",
+  "label": "Text - OCR Transcription",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "txt",
+  "extension": ".txt",
+  "system_prompt": "You are a precise image captioning engine for machine learning datasets. Your job is to describe only visible image content in a stable, factual, training-useful way. Do not provide analysis, hidden reasoning, caveats, markdown, or extra commentary. Follow the requested output format exactly.",
+  "user_prompt_template": "Extract only the readable text from this image.\n\nOutput only the transcribed text. Do not output JSON, markdown tables, bullets, explanations, labels, or commentary.\n\nPreserve visible line breaks and reading order as much as possible. Preserve capitalization, punctuation, numbers, symbols, diacritics, and spacing when legible.\n\nDo not guess unreadable, cropped, blurred, tiny, or stylized text. Use [unreadable] only for important text regions that are clearly present but not legible.\n\nIf there is no readable text, output exactly:\n[no readable text]",
+  "max_new_tokens": 2048,
+  "temperature": 0.0,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "txt_ocr_transcription",
+    "output_format": "txt",
+    "extension": ".txt",
+    "max_new_tokens": "1024_to_2048",
+    "temperature": "0.0_to_0.05",
+    "caption_style": "text_extraction"
+  }
+}

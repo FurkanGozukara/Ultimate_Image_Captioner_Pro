@@ -1,0 +1,18 @@
+{
+  "order": 35,
+  "id": "qc_dataset_sidecar_audit",
+  "label": "Qc - Dataset Sidecar Audit",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "json",
+  "extension": ".json",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "App-side dataset sidecar audit checks:\nfilename_pairing:\n  - every image must have exactly one matching .txt or .json sidecar if captions are required\n  - image and caption stems must match exactly\n  - no accidental spaces before extensions\n  - no duplicate stems after normalization\n\ncaption_file_health:\n  - non_empty\n  - utf8_valid\n  - no markdown_fences_for_json\n  - json_parse_valid_for_json_sidecars\n  - txt_caption_not_json_unless_expected\n\nideogram_json_health:\n  - required_top_level_keys\n  - compositional_deconstruction.background_exists\n  - compositional_deconstruction.elements_array_exists\n  - style_description_photo_or_art_style_not_both\n  - bbox_range_valid\n  - color_hex_uppercase\n\ntraining_health:\n  - trigger_phrase_present_when_required\n  - captions_not_identical_for_all_images_except_intentional_minimal_style_runs\n  - no real_person_names\n  - no obvious hallucination_phrases\n  - no OCR_guess_markers_like_maybe_or_probably_unless_allowed",
+  "max_new_tokens": 4096,
+  "temperature": 0.1,
+  "image_long_edge": 1024,
+  "app_side_only": true,
+  "raw_meta": {
+    "id": "qc_dataset_sidecar_audit",
+    "kind": "file_system_check"
+  }
+}

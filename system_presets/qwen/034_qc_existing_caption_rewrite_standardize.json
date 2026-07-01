@@ -1,0 +1,22 @@
+{
+  "order": 34,
+  "id": "qc_existing_caption_rewrite_standardize",
+  "label": "Qc - Existing Caption Rewrite Standardize",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "txt",
+  "extension": ".txt",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "Rewrite the existing caption into a clean training caption grounded in the image.\n\nExisting caption:\n{{EXISTING_CAPTION}}\n\nOutput only the rewritten caption text. Do not output JSON, markdown, labels, or commentary.\n\nBegin with this trigger phrase if provided:\n{{TRIGGER_PHRASE}}.\n\nWrite 2 to 5 concise sentences. Keep only details supported by the image. Remove unsupported claims, guessed names, guessed brands, unreadable text guesses, story, mood filler, and irrelevant wording.\n\nAdd important visible details that are missing: main subject, pose/action, clothing/accessories, objects, background, composition, lighting, color, medium, and readable text.\n\nFor real people, do not identify by name.",
+  "max_new_tokens": 512,
+  "temperature": 0.1,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "qc_existing_caption_rewrite_standardize",
+    "output_format": "txt",
+    "extension": ".txt",
+    "max_new_tokens": "512",
+    "temperature": "0.1",
+    "inputs": ""
+  }
+}

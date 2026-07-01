@@ -1,0 +1,22 @@
+{
+  "order": 28,
+  "id": "txt_accessibility_alt_text",
+  "label": "Text - Accessibility Alt Text",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "txt",
+  "extension": ".txt",
+  "system_prompt": "You are a precise image captioning engine for machine learning datasets. Your job is to describe only visible image content in a stable, factual, training-useful way. Do not provide analysis, hidden reasoning, caveats, markdown, or extra commentary. Follow the requested output format exactly.",
+  "user_prompt_template": "Write concise accessibility alt text for this image.\n\nOutput only the alt text. Do not output JSON, markdown, labels, or commentary.\n\nDescribe the main visual information a person would need to understand the image: subject, action, setting, important text, and relevant visual details.\n\nDo not over-describe style unless style is important to the meaning. Do not identify real people by name. Do not guess unreadable text or hidden context.\n\nKeep it to 1 to 3 sentences.",
+  "max_new_tokens": 512,
+  "temperature": 0.1,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "txt_accessibility_alt_text",
+    "output_format": "txt",
+    "extension": ".txt",
+    "max_new_tokens": "256_to_512",
+    "temperature": "0.1",
+    "caption_length": "1_to_3_sentences"
+  }
+}

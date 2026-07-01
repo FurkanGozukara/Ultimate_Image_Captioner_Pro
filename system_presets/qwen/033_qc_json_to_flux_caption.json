@@ -1,0 +1,22 @@
+{
+  "order": 33,
+  "id": "qc_json_to_flux_caption",
+  "label": "QC - JSON to Prompt Caption",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "txt",
+  "extension": ".txt",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "Convert the provided Ideogram JSON caption into one natural-language plain-prompt image-model training caption.\n\nIdeogram JSON caption:\n{{IDEOGRAM_JSON_CAPTION}}\n\nOutput only the caption text. Do not output JSON, markdown, bullets, labels, quotation marks, or commentary.\n\nIf a trigger phrase is provided, begin with it exactly:\n{{TRIGGER_PHRASE}}.\n\nWrite 2 to 5 concise sentences. Preserve the main visible content, subject, action or pose, important objects, background, composition, lighting, colors, and readable text.\n\nIf this is for a style LoRA, remove style, medium, rendering technique, brushwork, texture, palette, and aesthetic descriptors. Keep content and composition only.\n\nIf this is not for a style LoRA, keep useful visible style and medium details.",
+  "max_new_tokens": 512,
+  "temperature": 0.1,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "qc_json_to_flux_caption",
+    "output_format": "txt",
+    "extension": ".txt",
+    "max_new_tokens": "512",
+    "temperature": "0.1",
+    "inputs": ""
+  }
+}

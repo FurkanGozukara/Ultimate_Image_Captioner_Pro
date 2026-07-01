@@ -1,0 +1,21 @@
+{
+  "order": 32,
+  "id": "qc_repair_invalid_json_text_only",
+  "label": "Qc - Repair Invalid JSON Text Only",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "json",
+  "extension": ".json",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "Repair the following malformed JSON caption.\n\nValidation error:\n{{VALIDATION_ERROR}}\n\nMalformed JSON:\n{{INVALID_JSON_TEXT}}\n\nReturn one valid JSON object only. Do not output markdown, code fences, comments, explanations, labels, or extra text.\n\nDo not add new visual details. Preserve all valid information. Fix only syntax, key order, missing commas, quotation marks, invalid trailing commas, invalid color hex casing, and obviously invalid bbox ranges if possible.",
+  "max_new_tokens": 4096,
+  "temperature": 0.0,
+  "image_long_edge": 1024,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "qc_repair_invalid_json_text_only",
+    "output_format": "json",
+    "max_new_tokens": "4096",
+    "temperature": "0.0",
+    "inputs": ""
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "order": 27,
+  "id": "txt_legacy_comma_tags",
+  "label": "Text - Legacy Comma Tags",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "tags",
+  "extension": ".txt",
+  "system_prompt": "You are a precise image captioning engine for machine learning datasets. Your job is to describe only visible image content in a stable, factual, training-useful way. Do not provide analysis, hidden reasoning, caveats, markdown, or extra commentary. Follow the requested output format exactly.",
+  "user_prompt_template": "Create comma-separated training tags for this image.\n\nOutput only comma-separated tags. Do not output sentences, JSON, markdown, bullets, labels, quotation marks, or commentary.\n\nIf a trigger phrase is provided, make it the first tag exactly:\n{{TRIGGER_PHRASE}}\n\nDescribe only visible content. Include tags for the main subject, subject class, pose/action, clothing, accessories, important objects, background, composition, shot distance, camera/view angle, lighting, colors, and medium.\n\nUse short lowercase tags where possible. Do not invent names, brands, unreadable text, hidden context, or identities. For real people, do not identify by name.\n\nFor readable text, add a tag like text: \"EXACT TEXT\" only if the text is clearly legible. Otherwise use unreadable text.",
+  "max_new_tokens": 512,
+  "temperature": 0.1,
+  "image_long_edge": 768,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "txt_legacy_comma_tags",
+    "output_format": "tags",
+    "extension": ".txt",
+    "max_new_tokens": "256_to_512",
+    "temperature": "0.1",
+    "caption_style": "comma_separated_tags"
+  }
+}

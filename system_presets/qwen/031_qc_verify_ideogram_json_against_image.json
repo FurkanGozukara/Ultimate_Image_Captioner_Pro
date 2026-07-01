@@ -1,0 +1,21 @@
+{
+  "order": 31,
+  "id": "qc_verify_ideogram_json_against_image",
+  "label": "Qc - Verify Ideogram JSON Against Image",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "output_format": "json",
+  "extension": ".json",
+  "system_prompt": "You are a caption quality-control engine. Compare the requested caption or JSON against the image and the rules. Repair only what is invalid, hallucinated, inconsistent, malformed, or unsupported by the image. Do not add unrelated details. Return only the requested output.",
+  "user_prompt_template": "Compare the provided Ideogram JSON caption against the image.\n\nExisting JSON caption:\n{{EXISTING_JSON_CAPTION}}\n\nReturn valid JSON only with this exact structure:\n{\n  \"verdict\": \"pass\" | \"needs_fix\" | \"fail\",\n  \"schema_errors\": [],\n  \"unsupported_claims\": [],\n  \"missing_important_visible_details\": [],\n  \"bbox_errors\": [],\n  \"text_errors\": [],\n  \"style_errors\": [],\n  \"suggested_json\": {}\n}\n\nCheck:\n- Valid JSON object.\n- Correct top-level keys and key order.\n- \"compositional_deconstruction\" exists and contains \"background\" and \"elements\".\n- \"style_description\" uses exactly one of \"photo\" or \"art_style\".\n- \"photo\" is only used with medium \"photograph\".\n- Non-photo images use \"art_style\" and an accurate non-photo medium.\n- Bboxes use [y_min, x_min, y_max, x_max] normalized 0 to 1000, with min values less than max values.\n- Text elements copy only legible text exactly.\n- No real person names or unsupported identity claims.\n- No invented objects, backstory, hidden context, or unreadable text guesses.\n\nIf the caption needs repair, put the repaired complete JSON object in \"suggested_json\". Otherwise use an empty object.",
+  "max_new_tokens": 4096,
+  "temperature": 0.0,
+  "image_long_edge": 1024,
+  "app_side_only": false,
+  "raw_meta": {
+    "id": "qc_verify_ideogram_json_against_image",
+    "output_format": "json",
+    "max_new_tokens": "2048_to_4096",
+    "temperature": "0.0_to_0.1",
+    "inputs": ""
+  }
+}
