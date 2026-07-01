@@ -587,17 +587,17 @@ class LazyQwenEngine:
             return html_message("info", f"{message}<br>{stop_message}") if count else stop_message
         return html_message("info", message if count else "No Qwen batch is active.")
 
-    def caption_single(self, input_image: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str], None, None]:
+    def caption_single(self, input_image: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str, dict[str, Any]], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
         if not settings.get("use_subprocess", False):
             yield from self._get_engine().caption_single(input_image, settings)
             return
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
         if image_path is None:
-            yield html_message("error", "No image selected."), "", "", [], ""
+            yield html_message("error", "No image selected."), "", "", [], "", {}
             return
         try:
-            yield html_message("info", "Starting Qwen subprocess caption run..."), "", "", [], ""
+            yield html_message("info", "Starting Qwen subprocess caption run..."), "", "", [], "", {}
             data = run_worker(
                 "qwen_single",
                 {
@@ -611,9 +611,10 @@ class LazyQwenEngine:
                 str(data.get("overlay") or ""),
                 data.get("element_rows") or [],
                 str(data.get("error") or ""),
+                data.get("autosave_target") or {},
             )
         except Exception as exc:
-            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen subprocess generation failed.")
+            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen subprocess generation failed."), {}
 
     def process_batch_files_to_zip(
         self,

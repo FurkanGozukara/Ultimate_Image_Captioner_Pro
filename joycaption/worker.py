@@ -251,12 +251,18 @@ def qwen_single(payload: dict[str, Any]) -> dict[str, Any]:
     overlay = ""
     element_rows: list[list[Any]] = []
     error_html = ""
-    for status, output, overlay_html, rows, error in engine.caption_single(payload["image_path"], settings):
+    autosave_target: dict[str, Any] = {}
+    for result in engine.caption_single(payload["image_path"], settings):
+        values = list(result)
+        while len(values) < 6:
+            values.append({})
+        status, output, overlay_html, rows, error, target = values[:6]
         last_status = status
         caption = output or caption
         overlay = overlay_html or overlay
         element_rows = rows or element_rows
         error_html = error or error_html
+        autosave_target = target or autosave_target
     engine.clear_models()
     log_event("Qwen single complete.", "Worker")
     return {
@@ -266,6 +272,7 @@ def qwen_single(payload: dict[str, Any]) -> dict[str, Any]:
         "overlay": overlay,
         "element_rows": element_rows,
         "error": error_html,
+        "autosave_target": autosave_target,
     }
 
 

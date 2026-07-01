@@ -120,6 +120,12 @@ def _caption_extension(settings: dict[str, Any]) -> str:
     return extension.lower()
 
 
+def _compact_saved_json(settings: dict[str, Any]) -> bool:
+    if bool(settings.get("beautify_saved_json", True)):
+        return False
+    return bool(settings.get("compact_json", False))
+
+
 def _file_path(item: Any) -> Path:
     if isinstance(item, (str, Path)):
         return Path(item)
@@ -469,10 +475,11 @@ class QwenEngine:
     ) -> tuple[str, dict[str, Any] | None, list[str]]:
         output_format = str(settings.get("output_format") or "txt")
         if output_format == "json" or _caption_extension(settings) == ".json":
+            compact_saved_json = _compact_saved_json(settings)
             final, parsed, warnings = normalize_json_output(
                 raw_caption,
                 preset_id=str(settings.get("preset_id") or ""),
-                compact=bool(settings.get("compact_json", False)),
+                compact=compact_saved_json,
             )
             retries = int(settings.get("json_retries", 0) or 0)
             attempt = 0
@@ -500,26 +507,26 @@ class QwenEngine:
                 final, parsed, warnings = normalize_json_output(
                     raw_caption,
                     preset_id=str(settings.get("preset_id") or ""),
-                    compact=bool(settings.get("compact_json", False)),
+                    compact=compact_saved_json,
                 )
             parsed, warnings = _apply_detected_aspect_ratio(parsed, warnings, settings)
             if parsed is not None:
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-                    if bool(settings.get("compact_json", False))
+                    if compact_saved_json
                     else json.dumps(parsed, ensure_ascii=False, indent=2)
                 )
             return final, parsed, warnings
         return _normalize_text_output(raw_caption, settings), None, []
 
-    def caption_single(self, image_input: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str], None, None]:
+    def caption_single(self, image_input: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str, dict[str, Any]], None, None]:
         log_event("Qwen single image caption requested.", SCOPE)
         if settings.get("app_side_only", False):
-            yield html_message("error", "This preset is an app-side utility and does not run image generation."), "", "", [], ""
+            yield html_message("error", "This preset is an app-side utility and does not run image generation."), "", "", [], "", {}
             return
         image_path = coerce_image_path(image_input, OUTPUTS_DIR / "temp")
         if image_path is None:
-            yield html_message("error", "No image selected."), "", "", [], ""
+            yield html_message("error", "No image selected."), "", "", [], "", {}
             return
         delete_after = isinstance(image_input, Image.Image)
         try:
@@ -527,9 +534,9 @@ class QwenEngine:
             devices = parse_device_ids(settings.get("device_id") or "0", allow_cpu=True)
             reset_vram_peak_stats(devices)
             before_vram = vram_usage_text()
-            yield html_message("info", "Loading Qwen model..."), "", "", [], ""
+            yield html_message("info", "Loading Qwen model..."), "", "", [], "", {}
             status = self.load_model(settings)
-            yield html_message("info", f"{status} Generating..."), "", "", [], ""
+            yield html_message("info", f"{status} Generating..."), "", "", [], "", {}
             image = load_rgb_image(image_path, int(settings.get("image_long_edge", 1024) or 1024))
             image_settings = _settings_for_image(settings, image_path, image)
             raw_caption = self.generate_caption(image, image_settings)
@@ -594,6 +601,13 @@ class QwenEngine:
                     warnings.append(f"Boxed image save failed: {type(exc).__name__}: {exc}")
             overlay_source = _image_for_overlay(image_path, output_image_path)
             overlay = overlay_html(overlay_source, rows, interactive=True, bbox_order="yxyx")
+            autosave_target = {
+                "caption_path": str(caption_path),
+                "output_run_dir": str(_run_dir),
+                "output_folder_id": _run_dir.name,
+                "metadata_path": str(metadata_path),
+                "output_image_path": str(output_image_path) if output_image_path else None,
+            }
             warning_html = ""
             if warnings:
                 warning_html = "<br>Warnings:<br><pre>" + "\n".join(warnings) + "</pre>"
@@ -605,10 +619,10 @@ class QwenEngine:
                 f"Token speed: {_generation_stats_text(generation_stats)}<br>"
                 f"{optimization_status_text(settings)}<br><pre>Before {before_vram}\nAfter {after_vram}</pre>{warning_html}"
             )
-            yield html_message("success", f"Qwen generation complete.<br>{detail}"), display_caption, overlay, rows, ""
+            yield html_message("success", f"Qwen generation complete.<br>{detail}"), display_caption, overlay, rows, "", autosave_target
         except Exception as exc:
             traceback.print_exc()
-            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen generation failed. Check the terminal for details.")
+            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen generation failed. Check the terminal for details."), {}
         finally:
             if settings.get("unload_model", False):
                 self.clear_models()

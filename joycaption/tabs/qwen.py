@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import html
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 
 from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_QWEN_ATTENTION
-from ..common import IMAGE_EXTENSIONS, html_message
+from ..common import IMAGE_EXTENSIONS, OUTPUTS_DIR, html_message
 from ..json_tools import (
     EMPTY_ELEMENT_ROW,
     apply_rows_to_json,
@@ -45,6 +49,7 @@ ORDER = [
     "preset_id",
     "output_format",
     "extension",
+    "beautify_saved_json",
     "system_prompt",
     "prompt",
     "trigger_phrase",
@@ -100,6 +105,7 @@ DEFAULTS: dict[str, Any] = {
     "preset_id": DEFAULT_PRESET_ID,
     "output_format": DEFAULT_PAYLOAD["output_format"],
     "extension": DEFAULT_PAYLOAD["extension"],
+    "beautify_saved_json": True,
     "system_prompt": DEFAULT_PAYLOAD["system_prompt"],
     "prompt": DEFAULT_PAYLOAD["prompt"],
     "trigger_phrase": "",
@@ -462,28 +468,145 @@ def _choice_indices(selected: Any) -> list[int]:
     if isinstance(selected, str):
         selected = [selected]
     indices: list[int] = []
+    seen: set[int] = set()
     for value in selected or []:
-        match = str(value).strip()[:2]
+        match = str(value).strip().split(maxsplit=1)[0]
         try:
-            indices.append(int(match) - 1)
+            index = int(match) - 1
         except Exception:
             continue
+        if index >= 0 and index not in seen:
+            seen.add(index)
+            indices.append(index)
     return [index for index in indices if index >= 0]
 
 
 def _preserve_visible(rows: Any, selected: Any, default_all: bool = False) -> tuple[list[str], list[str]]:
     choices = _box_choices(rows)
-    selected_set = set(selected or [])
-    values = [choice for choice in choices if choice in selected_set]
+    choice_by_index = {index: choice for choice in choices if (index := next(iter(_choice_indices(choice)), None)) is not None}
+    values = [choice_by_index[index] for index in _choice_indices(selected) if index in choice_by_index]
     if default_all and not values:
         values = choices
     return choices, values
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _autosave_target_paths(target: Any) -> tuple[Path | None, Path | None, Path | None, str | None]:
+    if not isinstance(target, dict):
+        return None, None, None, "Autosave skipped because no generated output folder is active."
+    caption_value = str(target.get("caption_path") or "").strip()
+    if not caption_value:
+        return None, None, None, "Autosave skipped because no generated output folder is active."
+
+    caption_path = Path(caption_value)
+    run_dir = Path(str(target.get("output_run_dir") or caption_path.parent))
+    metadata_value = str(target.get("metadata_path") or "").strip()
+    metadata_path = Path(metadata_value) if metadata_value else None
+
+    if caption_path.suffix.lower() != ".json":
+        return None, None, None, f"Autosave skipped because the active output is {caption_path.name}, not a .json file."
+    if not _is_relative_to(caption_path, OUTPUTS_DIR) or not _is_relative_to(run_dir, OUTPUTS_DIR):
+        return None, None, None, "Autosave blocked because the stored target is outside the outputs folder."
+    if not _same_path(caption_path.parent, run_dir):
+        return None, None, None, "Autosave blocked because the stored folder id does not match the caption path."
+    if metadata_path is not None and (not _is_relative_to(metadata_path, OUTPUTS_DIR) or not _same_path(metadata_path.parent, run_dir)):
+        return None, None, None, "Autosave blocked because the stored metadata path does not match the output folder."
+    if not caption_path.exists():
+        return None, None, None, f"Autosave skipped because the generated JSON file no longer exists: {caption_path}"
+    return caption_path, run_dir, metadata_path, None
+
+
+def _update_autosave_metadata(metadata_path: Path | None, caption_path: Path, run_dir: Path, caption_text: str) -> str:
+    if metadata_path is None or not metadata_path.exists():
+        return ""
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return "Metadata was not updated because metadata.json is not an object."
+        metadata.update(
+            {
+                "caption_final": caption_text,
+                "box_edits_autosaved": True,
+                "box_edits_autosaved_at": datetime.now(timezone.utc).isoformat(),
+                "caption_path": str(caption_path),
+                "output_run_dir": str(run_dir),
+            }
+        )
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:
+        return f"Metadata update skipped: {type(exc).__name__}: {exc}"
+    return ""
+
+
+def _autosave_json_caption(caption_text: str, target: Any) -> str:
+    caption_path, run_dir, metadata_path, target_error = _autosave_target_paths(target)
+    if target_error:
+        return html_message("info", "JSON box edits applied. " + html.escape(target_error))
+    if caption_path is None or run_dir is None:
+        return html_message("info", "JSON box edits applied. Autosave skipped because no generated output folder is active.")
+
+    try:
+        json.loads(caption_text)
+    except Exception as exc:
+        return html_message(
+            "error",
+            "JSON box edits applied in the UI, but autosave was blocked because the edited JSON does not parse: "
+            + html.escape(f"{type(exc).__name__}: {exc}"),
+        )
+
+    try:
+        caption_path.write_text(caption_text, encoding="utf-8")
+        metadata_note = _update_autosave_metadata(metadata_path, caption_path, run_dir, caption_text)
+    except Exception as exc:
+        return html_message(
+            "error",
+            "JSON box edits applied in the UI, but autosave failed: "
+            + html.escape(f"{type(exc).__name__}: {exc}"),
+        )
+
+    folder_id = run_dir.name
+    location = f"outputs/{folder_id}/{caption_path.name}"
+    message = "JSON box edits applied and autosaved to " + html.escape(location) + "."
+    if metadata_note:
+        message += "<br>" + html.escape(metadata_note)
+    return html_message("success", message)
+
+
+def _json_caption_for_save(caption_text: str, beautify_saved_json: Any, compact_json: Any) -> str:
+    parsed = json.loads(caption_text)
+    if bool(beautify_saved_json):
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    if bool(compact_json):
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+    return caption_text
+
+
+def _box_edit_status(warnings: list[str], autosave_status: str) -> str:
+    if not warnings:
+        return autosave_status
+    warning_text = html.escape("\n".join(warnings))
+    return html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + warning_text + "</pre>") + autosave_status
 
 
 def build_tab(engine: Any) -> TabUI:
     components: dict[str, gr.components.Component] = {}
     global_error = gr.HTML(visible=False)
     all_element_rows = gr.State([])
+    autosave_target = gr.State({})
 
     with gr.Row(equal_height=False, elem_classes=["jc-qwen-grid"]):
         with gr.Column(scale=9, elem_classes=["jc-qwen-workspace"]):
@@ -567,6 +690,11 @@ def build_tab(engine: Any) -> TabUI:
                         allow_custom_value=True,
                     )
                     components["extension"] = gr.Textbox(label="Extension", value=DEFAULTS["extension"], scale=1)
+                    components["beautify_saved_json"] = gr.Checkbox(
+                        label="Beautify saved JSON",
+                        value=DEFAULTS["beautify_saved_json"],
+                        scale=2,
+                    )
                 components["system_prompt"] = gr.Textbox(label="System Prompt", lines=3, value=DEFAULTS["system_prompt"])
                 components["prompt"] = gr.Textbox(label="Prompt", lines=10, value=DEFAULTS["prompt"], elem_classes=["jc-codeish"])
 
@@ -753,10 +881,22 @@ def build_tab(engine: Any) -> TabUI:
             status = html_message("info", "JSON rendered with warnings:<br><pre>" + "\n".join(warnings) + "</pre>")
         return final, rows, _visible_df_value(rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
-    def apply_box_edits(image, caption_text, all_rows, visible_rows, bbox_order_value, visible_choices, disable_auto_update_value):
+    def apply_box_edits(
+        image,
+        caption_text,
+        all_rows,
+        visible_rows,
+        bbox_order_value,
+        visible_choices,
+        disable_auto_update_value,
+        autosave_target_value,
+        beautify_saved_json_value,
+        compact_json_value,
+    ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         merged_rows = _merge_visible_rows(all_rows, visible_choices, visible_rows)
         final, parsed, warnings = apply_rows_to_json(caption_text, merged_rows, bbox_order=bbox_order_value)
+        saved_final = _json_caption_for_save(final, beautify_saved_json_value, compact_json_value)
         display_rows = _row_data(merged_rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=False)
         overlay = overlay_html(
@@ -767,18 +907,27 @@ def build_tab(engine: Any) -> TabUI:
             visible_indices=_choice_indices(visible),
             disable_auto_update=bool(disable_auto_update_value),
         )
-        status = html_message("success", "JSON box edits applied.")
-        if warnings:
-            status = html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + "\n".join(warnings) + "</pre>")
+        status = _box_edit_status(warnings, _autosave_json_caption(saved_final, autosave_target_value))
         return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
-    def apply_overlay_edit(image, caption_text, bbox_order_value, visible_choices, disable_auto_update_value, evt: gr.EventData):
+    def apply_overlay_edit(
+        image,
+        caption_text,
+        bbox_order_value,
+        visible_choices,
+        disable_auto_update_value,
+        autosave_target_value,
+        beautify_saved_json_value,
+        compact_json_value,
+        evt: gr.EventData,
+    ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         payload = getattr(evt, "_data", {}) or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         final, parsed, _warnings = apply_rows_to_json(caption_text, rows, bbox_order=bbox_order_value)
+        saved_final = _json_caption_for_save(final, beautify_saved_json_value, compact_json_value)
         display_rows = _row_data(rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=False)
         overlay = overlay_html(
@@ -789,7 +938,8 @@ def build_tab(engine: Any) -> TabUI:
             visible_indices=_choice_indices(visible),
             disable_auto_update=bool(disable_auto_update_value),
         )
-        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay
+        status = _autosave_json_caption(saved_final, autosave_target_value)
+        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def add_box(all_rows, bbox_order_value, visible_choices):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -918,7 +1068,7 @@ def build_tab(engine: Any) -> TabUI:
     single_event = single_btn.click(
         run_single,
         inputs=[input_image] + ordered_components,
-        outputs=[single_status, output_caption, json_overlay, all_element_rows, global_error],
+        outputs=[single_status, output_caption, json_overlay, all_element_rows, global_error, autosave_target],
     )
     single_event.then(
         sync_generated_rows,
@@ -926,6 +1076,7 @@ def build_tab(engine: Any) -> TabUI:
         outputs=[element_rows, box_visibility, json_overlay],
         queue=False,
     )
+    input_image.change(lambda _image: {}, inputs=[input_image], outputs=autosave_target, queue=False)
     single_cancel_btn.click(engine.cancel_single, outputs=single_status, queue=False)
     open_outputs_btn.click(run_open_outputs, outputs=single_status, queue=False)
     render_json_btn.click(
@@ -935,13 +1086,33 @@ def build_tab(engine: Any) -> TabUI:
     )
     apply_box_btn.click(
         apply_box_edits,
-        inputs=[input_image, output_caption, all_element_rows, element_rows, bbox_order, box_visibility, disable_auto_update],
+        inputs=[
+            input_image,
+            output_caption,
+            all_element_rows,
+            element_rows,
+            bbox_order,
+            box_visibility,
+            disable_auto_update,
+            autosave_target,
+            components["beautify_saved_json"],
+            components["compact_json"],
+        ],
         outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
     )
     json_overlay.click(
         apply_overlay_edit,
-        inputs=[input_image, output_caption, bbox_order, box_visibility, disable_auto_update],
-        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay],
+        inputs=[
+            input_image,
+            output_caption,
+            bbox_order,
+            box_visibility,
+            disable_auto_update,
+            autosave_target,
+            components["beautify_saved_json"],
+            components["compact_json"],
+        ],
+        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
         queue=False,
     )
     add_event = add_box_btn.click(
