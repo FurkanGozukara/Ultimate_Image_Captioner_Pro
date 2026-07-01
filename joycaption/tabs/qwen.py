@@ -18,6 +18,7 @@ from ..json_tools import (
     json_to_element_rows,
     normalize_json_output,
     overlay_html,
+    save_boxed_image,
 )
 from ..qwen_presets import default_qwen_preset_id, preset_payload, qwen_preset_choices
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, qwen_vram_settings
@@ -530,7 +531,65 @@ def _autosave_target_paths(target: Any) -> tuple[Path | None, Path | None, Path 
     return caption_path, run_dir, metadata_path, None
 
 
-def _update_autosave_metadata(metadata_path: Path | None, caption_path: Path, run_dir: Path, caption_text: str) -> str:
+def _relative_output_label(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(OUTPUTS_DIR.resolve())).replace("\\", "/")
+    except (OSError, ValueError):
+        return path.name
+
+
+def _boxed_output_path(target: Any, caption_path: Path, run_dir: Path) -> Path:
+    boxed_value = str(target.get("boxed_image_path") or "").strip() if isinstance(target, dict) else ""
+    if boxed_value:
+        boxed_path = Path(boxed_value)
+        if _is_relative_to(boxed_path, OUTPUTS_DIR) and _same_path(boxed_path.parent, run_dir):
+            return boxed_path
+    return run_dir / f"{caption_path.stem}_boxed.png"
+
+
+def _boxed_source_path(image: Any, target: Any, run_dir: Path) -> Path | None:
+    output_value = str(target.get("output_image_path") or "").strip() if isinstance(target, dict) else ""
+    if output_value:
+        output_path = Path(output_value)
+        if output_path.exists() and _is_relative_to(output_path, OUTPUTS_DIR) and _same_path(output_path.parent, run_dir):
+            return output_path
+    if isinstance(image, (str, Path)):
+        image_path = Path(image)
+        if image_path.exists():
+            return image_path
+    return None
+
+
+def _save_autosave_boxed_image(
+    image: Any,
+    rows: Any,
+    bbox_order: str,
+    target: Any,
+    caption_path: Path,
+    run_dir: Path,
+) -> tuple[Path | None, str]:
+    if rows is None:
+        return None, ""
+    source_path = _boxed_source_path(image, target, run_dir)
+    if source_path is None:
+        return None, "Boxed PNG was not updated because the source image path is unavailable."
+    output_path = _boxed_output_path(target, caption_path, run_dir)
+    try:
+        saved = save_boxed_image(source_path, rows, output_path, bbox_order=bbox_order)
+    except Exception as exc:
+        return None, f"Boxed PNG update failed: {type(exc).__name__}: {exc}"
+    if saved is None:
+        return None, "Boxed PNG was not updated because there are no valid boxes to render."
+    return saved, f"Boxed PNG updated: outputs/{_relative_output_label(saved)}."
+
+
+def _update_autosave_metadata(
+    metadata_path: Path | None,
+    caption_path: Path,
+    run_dir: Path,
+    caption_text: str,
+    boxed_image_path: Path | None = None,
+) -> str:
     if metadata_path is None or not metadata_path.exists():
         return ""
     try:
@@ -546,13 +605,21 @@ def _update_autosave_metadata(metadata_path: Path | None, caption_path: Path, ru
                 "output_run_dir": str(run_dir),
             }
         )
+        if boxed_image_path is not None:
+            metadata["boxed_image_path"] = str(boxed_image_path)
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     except Exception as exc:
         return f"Metadata update skipped: {type(exc).__name__}: {exc}"
     return ""
 
 
-def _autosave_json_caption(caption_text: str, target: Any) -> str:
+def _autosave_json_caption(
+    caption_text: str,
+    target: Any,
+    image: Any = None,
+    rows: Any = None,
+    bbox_order: str = DEFAULT_BBOX_ORDER,
+) -> str:
     caption_path, run_dir, metadata_path, target_error = _autosave_target_paths(target)
     if target_error:
         return html_message("info", "JSON box edits applied. " + html.escape(target_error))
@@ -570,7 +637,8 @@ def _autosave_json_caption(caption_text: str, target: Any) -> str:
 
     try:
         caption_path.write_text(caption_text, encoding="utf-8")
-        metadata_note = _update_autosave_metadata(metadata_path, caption_path, run_dir, caption_text)
+        boxed_image_path, boxed_note = _save_autosave_boxed_image(image, rows, bbox_order, target, caption_path, run_dir)
+        metadata_note = _update_autosave_metadata(metadata_path, caption_path, run_dir, caption_text, boxed_image_path)
     except Exception as exc:
         return html_message(
             "error",
@@ -581,6 +649,8 @@ def _autosave_json_caption(caption_text: str, target: Any) -> str:
     folder_id = run_dir.name
     location = f"outputs/{folder_id}/{caption_path.name}"
     message = "JSON box edits applied and autosaved to " + html.escape(location) + "."
+    if boxed_note:
+        message += "<br>" + html.escape(boxed_note)
     if metadata_note:
         message += "<br>" + html.escape(metadata_note)
     return html_message("success", message)
@@ -907,7 +977,10 @@ def build_tab(engine: Any) -> TabUI:
             visible_indices=_choice_indices(visible),
             disable_auto_update=bool(disable_auto_update_value),
         )
-        status = _box_edit_status(warnings, _autosave_json_caption(saved_final, autosave_target_value))
+        status = _box_edit_status(
+            warnings,
+            _autosave_json_caption(saved_final, autosave_target_value, image, display_rows, bbox_order_value),
+        )
         return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def apply_overlay_edit(
@@ -938,7 +1011,7 @@ def build_tab(engine: Any) -> TabUI:
             visible_indices=_choice_indices(visible),
             disable_auto_update=bool(disable_auto_update_value),
         )
-        status = _autosave_json_caption(saved_final, autosave_target_value)
+        status = _autosave_json_caption(saved_final, autosave_target_value, image, display_rows, bbox_order_value)
         return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def add_box(all_rows, bbox_order_value, visible_choices):

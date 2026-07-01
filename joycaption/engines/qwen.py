@@ -607,6 +607,7 @@ class QwenEngine:
                 "output_folder_id": _run_dir.name,
                 "metadata_path": str(metadata_path),
                 "output_image_path": str(output_image_path) if output_image_path else None,
+                "boxed_image_path": str(boxed_image_path) if boxed_image_path else None,
             }
             warning_html = ""
             if warnings:
