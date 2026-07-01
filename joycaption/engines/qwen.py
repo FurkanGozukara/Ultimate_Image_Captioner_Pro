@@ -35,6 +35,7 @@ from ..common import (
     BatchStopFlag,
     IMAGE_EXTENSIONS,
     OUTPUTS_DIR,
+    apply_replace_pairs,
     apply_torch_optimizations,
     batch_progress_line,
     coerce_image_path,
@@ -150,6 +151,53 @@ def _normalize_text_output(text: str, settings: dict[str, Any]) -> str:
         replace_case_sensitive=bool(settings.get("replace_case_sensitive", False)),
         replace_single_word=bool(settings.get("replace_single_word", False)),
     )
+
+
+_JSON_PRIMARY_TEXT_KEYS = ("high_level_description", "description", "caption", "prompt")
+_JSON_EXACT_TEXT_KEYS = {"text"}
+_JSON_CONTROL_TEXT_KEYS = {"aspect_ratio", "verdict"}
+
+
+def _postprocess_json_caption(data: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    prefix = str(settings.get("caption_prefix", "") or "")
+    suffix = str(settings.get("caption_suffix", "") or "")
+    replace_pairs = settings.get("replace_pairs")
+    case_sensitive = bool(settings.get("replace_case_sensitive", False))
+    single_word = bool(settings.get("replace_single_word", False))
+    primary_applied = False
+
+    def process_text(key: str | None, value: str) -> str:
+        nonlocal primary_applied
+        if key in _JSON_PRIMARY_TEXT_KEYS and not primary_applied:
+            primary_applied = True
+            return finalize_caption_text(
+                value,
+                remove_newlines=bool(settings.get("remove_newlines", False)),
+                prefix=prefix,
+                suffix=suffix,
+                replace_pairs=replace_pairs,
+                replace_case_sensitive=case_sensitive,
+                replace_single_word=single_word,
+            )
+        if key not in _JSON_EXACT_TEXT_KEYS and key not in _JSON_CONTROL_TEXT_KEYS:
+            return apply_replace_pairs(
+                value,
+                replace_pairs,
+                case_sensitive=case_sensitive,
+                single_word=single_word,
+            )
+        return value
+
+    def walk(value: Any, key: str | None = None) -> Any:
+        if isinstance(value, dict):
+            return {item_key: walk(item_value, str(item_key)) for item_key, item_value in value.items()}
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, str):
+            return process_text(key, value)
+        return value
+
+    return walk(data)
 
 
 def _image_for_overlay(source: Path, saved_image: Path | None) -> Path:
@@ -511,6 +559,7 @@ class QwenEngine:
                 )
             parsed, warnings = _apply_detected_aspect_ratio(parsed, warnings, settings)
             if parsed is not None:
+                parsed = _postprocess_json_caption(parsed, settings)
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
                     if compact_saved_json
