@@ -169,7 +169,7 @@ def build_app() -> gr.Blocks:
                 with gr.Column(scale=1, elem_classes=["jc-brand"]):
                     gr.HTML(
                         """
-                        <h1>Ultimate Image Captioner Pro V1.1 : <a href="https://www.patreon.com/SECourses/posts/162527725">https://www.patreon.com/SECourses/posts/162527725</a></h1>
+                        <h1>Ultimate Image Captioner Pro V1.1.1 : <a href="https://www.patreon.com/SECourses/posts/162527725">https://www.patreon.com/SECourses/posts/162527725</a></h1>
                         <p>Unified Qwen3 VL, Ideogram JSON, Pre-Alpha, Alpha, and Beta captioning workspace.</p>
                         """
                     )

@@ -121,6 +121,10 @@ def _caption_extension(settings: dict[str, Any]) -> str:
     return extension.lower()
 
 
+def _preset_id(settings: dict[str, Any]) -> str:
+    return str(settings.get("preset_id") or settings.get("id") or "")
+
+
 def _compact_saved_json(settings: dict[str, Any]) -> bool:
     if bool(settings.get("beautify_saved_json", True)):
         return False
@@ -228,7 +232,7 @@ def _aspect_ratio_text(width: int, height: int) -> str:
 
 
 def _settings_for_image(settings: dict[str, Any], image_path: Path, image: Image.Image) -> dict[str, Any]:
-    preset_id = str(settings.get("preset_id") or settings.get("id") or "")
+    preset_id = _preset_id(settings)
     if not preset_id.startswith(("i4_official_v1", "i4_json_")):
         return settings
     try:
@@ -257,7 +261,7 @@ def _apply_detected_aspect_ratio(
     warnings: list[str],
     settings: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    preset_id = str(settings.get("preset_id") or settings.get("id") or "")
+    preset_id = _preset_id(settings)
     if not preset_id.startswith(("i4_official_v1", "i4_json_")) or parsed is None:
         return parsed, warnings
     aspect_ratio = str(settings.get("detected_aspect_ratio") or "").strip()
@@ -524,14 +528,14 @@ class QwenEngine:
         output_format = str(settings.get("output_format") or "txt")
         if output_format == "json" or _caption_extension(settings) == ".json":
             compact_saved_json = _compact_saved_json(settings)
+            preset_id = _preset_id(settings)
             final, parsed, warnings = normalize_json_output(
                 raw_caption,
-                preset_id=str(settings.get("preset_id") or ""),
+                preset_id=preset_id,
                 compact=compact_saved_json,
             )
             retries = int(settings.get("json_retries", 0) or 0)
             attempt = 0
-            preset_id = str(settings.get("preset_id") or "")
             while (
                 parsed is None
                 or (preset_id.startswith(("i4_official_v1", "i4_json_")) and official_v1_warnings_require_retry(warnings))
@@ -554,7 +558,7 @@ class QwenEngine:
                 raw_caption = self.generate_caption(image, retry_settings)
                 final, parsed, warnings = normalize_json_output(
                     raw_caption,
-                    preset_id=str(settings.get("preset_id") or ""),
+                    preset_id=preset_id,
                     compact=compact_saved_json,
                 )
             parsed, warnings = _apply_detected_aspect_ratio(parsed, warnings, settings)
@@ -599,7 +603,7 @@ class QwenEngine:
                 "engine": "qwen3_vl_8b_instruct",
                 "model_path": str(self.model_path),
                 "source_image_path": str(image_path),
-                "preset_id": settings.get("preset_id"),
+                "preset_id": _preset_id(settings),
                 "system_prompt": settings.get("system_prompt"),
                 "prompt": image_settings.get("prompt"),
                 "output_format": settings.get("output_format"),
