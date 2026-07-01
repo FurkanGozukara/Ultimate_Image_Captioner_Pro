@@ -6,14 +6,14 @@
 *   Full features of the app introduced below with screenshots so please read    
 *   Hopefully a tutorial video coming as well    
 *   SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added    
-    *   SwarmUI : [https://www.patreon.com/posts/114517862](https://www.patreon.com/posts/114517862)        
+    *   SwarmUI : [https://www.patreon.com/SECourses/posts/114517862](https://www.patreon.com/SECourses/posts/114517862)        
     *   ComfyUI : [https://www.patreon.com/SECourses/posts/105023709](https://www.patreon.com/SECourses/posts/105023709)
         
 *   **Windows Requirements**    
     *   Python 3.11.x, FFmpeg, CUDA 13, cuDNN 9.17 or above, C++ tools, MSVC and Git        
         *   Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver            
         *   Follow this requirements tutorial video exactly : [https://youtu.be/DrhUHnYfwC0](https://youtu.be/DrhUHnYfwC0)            
-        *   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/posts/111553210](https://www.patreon.com/posts/111553210)
+        *   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/SECourses/posts/111553210](https://www.patreon.com/SECourses/posts/111553210)
             
 *   **For RunPod, SimplePod, Massed Compute and Linux please follow:**    
     *   Massed\_Compute\_Instructions\_READ.txt        
