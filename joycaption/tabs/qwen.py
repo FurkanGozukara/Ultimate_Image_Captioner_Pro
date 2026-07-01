@@ -204,6 +204,7 @@ if (!element.dataset.jcQwenOverlayBound) {
   };
 
   const commitFrame = (frame, activeIndex) => {
+    if (frame.dataset.disableAutoUpdate === "1") return;
     const surface = frameRect(frame);
     if (!surface.width || !surface.height) return;
     const rows = rowsForFrame(frame);
@@ -995,6 +996,8 @@ def build_tab(engine: Any) -> TabUI:
         evt: gr.EventData,
     ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
+        if bool(disable_auto_update_value):
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         payload = getattr(evt, "_data", {}) or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
