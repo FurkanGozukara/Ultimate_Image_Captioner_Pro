@@ -60,11 +60,12 @@ from ..json_tools import (
     boxed_image_png_bytes,
     json_to_element_rows,
     normalize_json_output,
+    parse_json_caption,
     official_v1_warnings_require_retry,
     overlay_html,
     save_boxed_image,
 )
-from ..qwen_presets import OFFICIAL_V1_PRESET_ID
+from ..qwen_presets import OFFICIAL_V1_PRESET_ID, get_qwen_preset
 
 
 SCOPE = "Qwen3 VL 8B Instruct"
@@ -160,6 +161,52 @@ def _normalize_text_output(text: str, settings: dict[str, Any]) -> str:
 _JSON_PRIMARY_TEXT_KEYS = ("high_level_description", "description", "caption", "prompt")
 _JSON_EXACT_TEXT_KEYS = {"text"}
 _JSON_CONTROL_TEXT_KEYS = {"aspect_ratio", "verdict"}
+_JSON_URL_METADATA_KEYS = {
+    "image",
+    "image_url",
+    "image_uri",
+    "url",
+    "source_url",
+    "link",
+    "href",
+    "src",
+}
+
+
+def _looks_like_url(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower().startswith(("http://", "https://"))
+
+
+def _strip_json_url_metadata(value: Any, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for item_key, item_value in value.items():
+            item_key_text = str(item_key)
+            if item_key_text.lower() in _JSON_URL_METADATA_KEYS and _looks_like_url(item_value):
+                continue
+            cleaned[item_key] = _strip_json_url_metadata(item_value, item_key_text)
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_json_url_metadata(item) for item in value]
+    return value
+
+
+def _native_preset_output_format(settings: dict[str, Any]) -> str:
+    preset_id = _preset_id(settings)
+    if not preset_id:
+        return ""
+    try:
+        return str(get_qwen_preset(preset_id).output_format or "")
+    except Exception:
+        return ""
+
+
+def _json_requested_for_text_preset(settings: dict[str, Any]) -> bool:
+    native_format = _native_preset_output_format(settings)
+    if native_format not in {"txt", "tags"}:
+        return False
+    output_format = str(settings.get("output_format") or "")
+    return output_format == "json" or _caption_extension(settings) == ".json"
 
 
 def _postprocess_json_caption(data: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
@@ -529,6 +576,21 @@ class QwenEngine:
         if output_format == "json" or _caption_extension(settings) == ".json":
             compact_saved_json = _compact_saved_json(settings)
             preset_id = _preset_id(settings)
+            if _json_requested_for_text_preset(settings):
+                parsed, _pretty, _warnings = parse_json_caption(raw_caption)
+                if parsed is None:
+                    caption_text = _normalize_text_output(raw_caption, settings)
+                    parsed = {"description": caption_text}
+                else:
+                    parsed = _strip_json_url_metadata(parsed)
+                    parsed = _postprocess_json_caption(parsed, settings)
+                final = (
+                    json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                    if compact_saved_json
+                    else json.dumps(parsed, ensure_ascii=False, indent=2)
+                )
+                return final, parsed, []
+
             final, parsed, warnings = normalize_json_output(
                 raw_caption,
                 preset_id=preset_id,
@@ -563,6 +625,7 @@ class QwenEngine:
                 )
             parsed, warnings = _apply_detected_aspect_ratio(parsed, warnings, settings)
             if parsed is not None:
+                parsed = _strip_json_url_metadata(parsed)
                 parsed = _postprocess_json_caption(parsed, settings)
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))

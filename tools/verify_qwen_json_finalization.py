@@ -25,11 +25,24 @@ RAW_WITH_EXTRA_IMAGE_KEY = json.dumps(
     }
 )
 
+RAW_TEXT_PRESET_JSON_WITH_EXTRA_IMAGE_KEY = json.dumps(
+    {
+        "image": "https://i.imgur.com/7ZQZQZQ.jpg",
+        "description": "A woman stands in a studio portrait.",
+        "objects": [
+            {
+                "label": "woman",
+                "bbox": [100, 100, 900, 900],
+            }
+        ],
+    }
+)
 
-def _finalize(settings: dict[str, object]) -> tuple[str, dict[str, object] | None, list[str]]:
+
+def _finalize(raw_caption: str, settings: dict[str, object]) -> tuple[str, dict[str, object] | None, list[str]]:
     engine = QwenEngine(Path("unused-model-path"))
     image = Image.new("RGB", (8, 8), "white")
-    return engine._finalize_output(image, RAW_WITH_EXTRA_IMAGE_KEY, settings)
+    return engine._finalize_output(image, raw_caption, settings)
 
 
 def main() -> None:
@@ -41,7 +54,7 @@ def main() -> None:
         "compact_json": False,
         "json_retries": 0,
     }
-    final, parsed, warnings = _finalize(official_settings)
+    final, parsed, warnings = _finalize(RAW_WITH_EXTRA_IMAGE_KEY, official_settings)
     assert warnings == []
     assert parsed is not None
     assert "image" not in parsed
@@ -52,19 +65,32 @@ def main() -> None:
         "compositional_deconstruction",
     ]
 
-    non_official_settings = {
-        "id": "txt_flux2_general",
+    text_preset_json_settings = {
+        "id": "txt_flux2_subject_person_lora",
         "output_format": "json",
         "extension": ".json",
         "beautify_saved_json": True,
         "compact_json": False,
         "json_retries": 0,
+        "replace_pairs": [["woman", "maxianer"]],
+        "replace_case_sensitive": False,
+        "replace_single_word": False,
     }
-    final, parsed, warnings = _finalize(non_official_settings)
+    final, parsed, warnings = _finalize(RAW_TEXT_PRESET_JSON_WITH_EXTRA_IMAGE_KEY, text_preset_json_settings)
     assert warnings == []
     assert parsed is not None
-    assert parsed["image"] == "https://i.imgur.com/7ZQZQZQ.jpg"
-    assert "i.imgur.com" in final
+    assert "image" not in parsed
+    assert "i.imgur.com" not in final
+    assert "maxianer" in parsed["description"]
+    assert parsed["objects"][0]["label"] == "maxianer"
+
+    raw_text = "A woman stands in a studio portrait."
+    engine = QwenEngine(Path("unused-model-path"))
+    image = Image.new("RGB", (8, 8), "white")
+    final, parsed, warnings = engine._finalize_output(image, raw_text, text_preset_json_settings)
+    assert warnings == []
+    assert parsed == {"description": "A maxianer stands in a studio portrait."}
+    assert json.loads(final) == parsed
     print("Qwen JSON finalization verification passed.")
 
 
