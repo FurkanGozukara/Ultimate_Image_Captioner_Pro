@@ -45,6 +45,26 @@ def _finalize(raw_caption: str, settings: dict[str, object]) -> tuple[str, dict[
     return engine._finalize_output(image, raw_caption, settings)
 
 
+class FakeStructuredQwenEngine(QwenEngine):
+    def __init__(self) -> None:
+        super().__init__(Path("unused-model-path"))
+
+    def generate_caption(self, image: Image.Image, settings: dict[str, object]) -> str:
+        return json.dumps(
+            {
+                "image": "https://i.imgur.com/7ZQZQZQ.jpg",
+                "caption": "A woman stands in a studio portrait.",
+                "elements": [
+                    {
+                        "label": "woman",
+                        "bbox": [100, 100, 900, 900],
+                        "description": "A woman standing against a plain studio background.",
+                    }
+                ],
+            }
+        )
+
+
 def main() -> None:
     official_settings = {
         "id": "i4_json_auto_best",
@@ -89,7 +109,25 @@ def main() -> None:
     image = Image.new("RGB", (8, 8), "white")
     final, parsed, warnings = engine._finalize_output(image, raw_text, text_preset_json_settings)
     assert warnings == []
-    assert parsed == {"description": "A maxianer stands in a studio portrait."}
+    assert parsed == {"caption": "A maxianer stands in a studio portrait."}
+    assert json.loads(final) == parsed
+
+    raw_text_with_url = "A woman stands in a studio portrait. https://i.imgur.com/7ZQZQZQ.jpg"
+    final, parsed, warnings = engine._finalize_output(image, raw_text_with_url, text_preset_json_settings)
+    assert warnings == []
+    assert parsed == {"caption": "A maxianer stands in a studio portrait."}
+    assert "i.imgur.com" not in final
+
+    structured_settings = dict(text_preset_json_settings)
+    structured_settings["json_retries"] = 1
+    final, parsed, warnings = FakeStructuredQwenEngine()._finalize_output(image, raw_text, structured_settings)
+    assert warnings == []
+    assert parsed is not None
+    assert "image" not in parsed
+    assert "i.imgur.com" not in final
+    assert parsed["caption"] == "A maxianer stands in a studio portrait."
+    assert parsed["elements"][0]["label"] == "maxianer"
+    assert "maxianer" in parsed["elements"][0]["description"]
     assert json.loads(final) == parsed
     print("Qwen JSON finalization verification passed.")
 

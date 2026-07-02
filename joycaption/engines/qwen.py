@@ -5,6 +5,7 @@ import json
 import math
 import multiprocessing as mp
 import queue
+import re
 import tempfile
 import threading
 import time
@@ -171,6 +172,7 @@ _JSON_URL_METADATA_KEYS = {
     "href",
     "src",
 }
+_URL_PATTERN = re.compile(r"https?://\S+")
 
 
 def _looks_like_url(value: Any) -> bool:
@@ -188,6 +190,8 @@ def _strip_json_url_metadata(value: Any, key: str | None = None) -> Any:
         return cleaned
     if isinstance(value, list):
         return [_strip_json_url_metadata(item) for item in value]
+    if isinstance(value, str):
+        return _URL_PATTERN.sub("", value).strip()
     return value
 
 
@@ -207,6 +211,49 @@ def _json_requested_for_text_preset(settings: dict[str, Any]) -> bool:
         return False
     output_format = str(settings.get("output_format") or "")
     return output_format == "json" or _caption_extension(settings) == ".json"
+
+
+def _text_json_caption_value(data: dict[str, Any] | None) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for key in ("caption", "description", "high_level_description", "prompt"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _is_minimal_text_json(data: dict[str, Any] | None) -> bool:
+    if not isinstance(data, dict):
+        return True
+    has_caption = bool(_text_json_caption_value(data))
+    has_structure = any(isinstance(data.get(key), list) and data.get(key) for key in ("elements", "objects", "subjects"))
+    return has_caption and not has_structure
+
+
+def _structured_text_json_prompt(caption_text: str) -> str:
+    return (
+        "Convert this LoRA training caption into a richer structured JSON sidecar using the image.\n\n"
+        "Return exactly one valid JSON object only. Do not output markdown, code fences, labels, comments, or explanations.\n\n"
+        "Use this top-level structure:\n"
+        "{\n"
+        '  "caption": "...",\n'
+        '  "elements": [\n'
+        '    {"label": "...", "bbox": [y_min, x_min, y_max, x_max], "description": "..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Keep the caption factual and suitable for LoRA training.\n"
+        "- Preserve any trigger phrase already present in the caption.\n"
+        "- Include the main person as the first element, then important clothing, accessories, held objects, and setting details.\n"
+        "- Use 3 to 8 elements when visible.\n"
+        "- Bboxes are normalized integers from 0 to 1000 in [y_min, x_min, y_max, x_max] order.\n"
+        "- Do not include image, image_url, image_uri, url, source_url, link, href, src, file, or filename keys.\n"
+        "- Do not include or invent web links, image links, file paths, IDs, usernames, or source references.\n"
+        "- Do not identify real people by name.\n\n"
+        "Caption to structure:\n"
+        f"{caption_text}"
+    )
 
 
 def _postprocess_json_caption(data: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
@@ -578,12 +625,24 @@ class QwenEngine:
             preset_id = _preset_id(settings)
             if _json_requested_for_text_preset(settings):
                 parsed, _pretty, _warnings = parse_json_caption(raw_caption)
-                if parsed is None:
-                    caption_text = _normalize_text_output(raw_caption, settings)
-                    parsed = {"description": caption_text}
-                else:
+                if parsed is not None:
                     parsed = _strip_json_url_metadata(parsed)
                     parsed = _postprocess_json_caption(parsed, settings)
+                caption_text = _text_json_caption_value(parsed) or _normalize_text_output(raw_caption, settings)
+                caption_text = _URL_PATTERN.sub("", caption_text).strip()
+                retries = int(settings.get("json_retries", 0) or 0)
+                if _is_minimal_text_json(parsed) and retries > 0 and caption_text:
+                    retry_settings = dict(settings)
+                    retry_settings["prompt"] = _structured_text_json_prompt(caption_text)
+                    retry_settings["temperature"] = 0.0
+                    retry_settings["max_new_tokens"] = max(int(settings.get("max_new_tokens", 512) or 512), 1024)
+                    structured_raw = self.generate_caption(image, retry_settings)
+                    structured_parsed, _structured_pretty, _structured_warnings = parse_json_caption(structured_raw)
+                    if structured_parsed is not None:
+                        parsed = _strip_json_url_metadata(structured_parsed)
+                        parsed = _postprocess_json_caption(parsed, settings)
+                if parsed is None:
+                    parsed = {"caption": caption_text}
                 final = (
                     json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
                     if compact_saved_json
