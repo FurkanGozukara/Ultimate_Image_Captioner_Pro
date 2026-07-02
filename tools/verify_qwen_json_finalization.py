@@ -38,6 +38,8 @@ RAW_TEXT_PRESET_JSON_WITH_EXTRA_IMAGE_KEY = json.dumps(
     }
 )
 
+RAW_INVALID_JSON_WITH_URL = '{"caption": "bad https://i.imgur.com/7ZQZQZQ.jpg",'
+
 
 def _finalize(raw_caption: str, settings: dict[str, object]) -> tuple[str, dict[str, object] | None, list[str]]:
     engine = QwenEngine(Path("unused-model-path"))
@@ -84,6 +86,11 @@ def main() -> None:
         "high_level_description",
         "compositional_deconstruction",
     ]
+
+    final, parsed, warnings = _finalize(RAW_INVALID_JSON_WITH_URL, official_settings)
+    assert parsed is None
+    assert warnings
+    assert "i.imgur.com" not in final
 
     text_preset_json_settings = {
         "id": "txt_flux2_subject_person_lora",

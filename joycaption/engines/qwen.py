@@ -691,6 +691,8 @@ class QwenEngine:
                     if compact_saved_json
                     else json.dumps(parsed, ensure_ascii=False, indent=2)
                 )
+            else:
+                final = _URL_PATTERN.sub("", final).strip()
             return final, parsed, warnings
         return _normalize_text_output(raw_caption, settings), None, []
 
