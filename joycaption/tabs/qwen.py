@@ -173,6 +173,31 @@ if (!element.dataset.jcQwenOverlayBound) {
     }
   };
 
+  const editedIndicesForFrame = (frame) => {
+    try {
+      const indices = JSON.parse(frame.dataset.previewEditedIndices || "[]");
+      return Array.isArray(indices) ? indices.map(Number).filter(Number.isFinite) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const syncPreviewSnapshot = (frame) => {
+    const target = document.querySelector("#jc-qwen-preview-rows-snapshot textarea, #jc-qwen-preview-rows-snapshot input");
+    if (!target) return;
+    const value = JSON.stringify({
+      rows: rowsForFrame(frame),
+      edited_indices: editedIndicesForFrame(frame),
+    });
+    if (target.value === value) return;
+    const proto = target.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(target, value);
+    else target.value = value;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
   const frameRect = (frame) => {
     const img = frame.querySelector(".jc-overlay-image");
     const rect = (img && img.naturalWidth > 0) ? img.getBoundingClientRect() : frame.getBoundingClientRect();
@@ -204,7 +229,6 @@ if (!element.dataset.jcQwenOverlayBound) {
   };
 
   const commitFrame = (frame, activeIndex) => {
-    if (frame.dataset.disableAutoUpdate === "1") return;
     const surface = frameRect(frame);
     if (!surface.width || !surface.height) return;
     const rows = rowsForFrame(frame);
@@ -227,7 +251,14 @@ if (!element.dataset.jcQwenOverlayBound) {
       rows[activeIndex][3] = yMax;
       rows[activeIndex][4] = xMax;
     }
-    trigger("click", { action: "box-edit", rows, index: activeIndex });
+    frame.dataset.rows = JSON.stringify(rows);
+    const edited = new Set(editedIndicesForFrame(frame));
+    edited.add(activeIndex);
+    frame.dataset.previewEditedIndices = JSON.stringify([...edited]);
+    syncPreviewSnapshot(frame);
+    if (frame.dataset.disableAutoUpdate !== "1") {
+      trigger("click", { action: "box-edit", rows, index: activeIndex });
+    }
   };
 
   const bindFrame = (frame) => {
@@ -304,7 +335,10 @@ if (!element.dataset.jcQwenOverlayBound) {
   };
 
   const install = () => {
-    element.querySelectorAll(".jc-overlay-frame").forEach(bindFrame);
+    element.querySelectorAll(".jc-overlay-frame").forEach((frame) => {
+      bindFrame(frame);
+      syncPreviewSnapshot(frame);
+    });
   };
 
   watch("value", () => queueMicrotask(install));
@@ -427,6 +461,44 @@ def _row_data(rows: Any) -> list[list[Any]]:
     return [list(row) for row in (rows or []) if isinstance(row, (list, tuple))]
 
 
+def _preview_rows_snapshot_value(rows: Any, edited_indices: Any = None) -> str:
+    indices: list[int] = []
+    for value in edited_indices or []:
+        try:
+            index = int(value)
+        except Exception:
+            continue
+        if index >= 0 and index not in indices:
+            indices.append(index)
+    return json.dumps({"rows": _row_data(rows), "edited_indices": indices}, ensure_ascii=False)
+
+
+def _preview_rows_from_snapshot(snapshot: Any) -> tuple[list[list[Any]] | None, list[int]]:
+    if not isinstance(snapshot, str) or not snapshot.strip():
+        return None, []
+    try:
+        payload = json.loads(snapshot)
+    except Exception:
+        return None, []
+    if isinstance(payload, dict):
+        rows = payload.get("rows")
+        edited_values = payload.get("edited_indices")
+    else:
+        rows = payload
+        edited_values = range(len(rows)) if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return None, []
+    edited_indices: list[int] = []
+    for value in edited_values or []:
+        try:
+            index = int(value)
+        except Exception:
+            continue
+        if index >= 0 and index not in edited_indices:
+            edited_indices.append(index)
+    return _row_data(rows), edited_indices
+
+
 def _df_value(rows: Any, bbox_order: str = DEFAULT_BBOX_ORDER) -> dict[str, Any]:
     return {"headers": headers_for_bbox_order(bbox_order), "data": _row_data(rows)}
 
@@ -446,6 +518,23 @@ def _merge_visible_rows(all_rows: Any, selected: Any, visible_rows: Any) -> list
     for target_index, row in zip(_choice_indices(selected), visible_data):
         if 0 <= target_index < len(merged):
             merged[target_index] = row
+    return merged
+
+
+def _merge_preview_bbox_rows(rows: Any, preview_snapshot: Any) -> list[list[Any]]:
+    merged = _row_data(rows)
+    preview_rows, edited_indices = _preview_rows_from_snapshot(preview_snapshot)
+    if preview_rows is None or not edited_indices:
+        return merged
+    for index in edited_indices:
+        if index >= len(merged) or index >= len(preview_rows):
+            continue
+        preview_row = list(preview_rows[index]) + [""] * max(0, 8 - len(preview_rows[index]))
+        if not all(str(value).strip() for value in preview_row[1:5]):
+            continue
+        merged_row = list(merged[index]) + [""] * max(0, 8 - len(merged[index]))
+        merged_row[1:5] = preview_row[1:5]
+        merged[index] = merged_row[: len(merged[index]) if len(merged[index]) >= 8 else 8]
     return merged
 
 
@@ -678,6 +767,13 @@ def build_tab(engine: Any) -> TabUI:
     global_error = gr.HTML(visible=False)
     all_element_rows = gr.State([])
     autosave_target = gr.State({})
+    preview_rows_snapshot = gr.Textbox(
+        value=_preview_rows_snapshot_value([]),
+        label="Preview Rows Snapshot",
+        elem_id="jc-qwen-preview-rows-snapshot",
+        elem_classes=["jc-hidden-sync"],
+        interactive=True,
+    )
 
     with gr.Row(equal_height=False, elem_classes=["jc-qwen-grid"]):
         with gr.Column(scale=9, elem_classes=["jc-qwen-workspace"]):
@@ -702,7 +798,7 @@ def build_tab(engine: Any) -> TabUI:
                     )
                     with gr.Row():
                         render_json_btn = gr.Button("Render JSON Boxes", elem_classes=["btn-qwen-render"])
-                        apply_box_btn = gr.Button("Apply Box Edits", elem_classes=["btn-qwen-apply"])
+                        apply_box_btn = gr.Button("Apply Box Edits & Save", elem_classes=["btn-qwen-apply"])
                         add_box_btn = gr.Button("Add Box", elem_classes=["btn-json-add"])
                         clear_box_btn = gr.Button("Clear Boxes", elem_classes=["btn-reset-preset"])
 
@@ -950,13 +1046,14 @@ def build_tab(engine: Any) -> TabUI:
         status = ""
         if warnings:
             status = html_message("info", "JSON rendered with warnings:<br><pre>" + "\n".join(warnings) + "</pre>")
-        return final, rows, _visible_df_value(rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
+        return final, rows, _preview_rows_snapshot_value(rows), _visible_df_value(rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def apply_box_edits(
         image,
         caption_text,
         all_rows,
         visible_rows,
+        preview_snapshot,
         bbox_order_value,
         visible_choices,
         disable_auto_update_value,
@@ -966,6 +1063,7 @@ def build_tab(engine: Any) -> TabUI:
     ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         merged_rows = _merge_visible_rows(all_rows, visible_choices, visible_rows)
+        merged_rows = _merge_preview_bbox_rows(merged_rows, preview_snapshot)
         final, parsed, warnings = apply_rows_to_json(caption_text, merged_rows, bbox_order=bbox_order_value)
         saved_final = _json_caption_for_save(final, beautify_saved_json_value, compact_json_value)
         display_rows = _row_data(merged_rows)
@@ -982,11 +1080,13 @@ def build_tab(engine: Any) -> TabUI:
             warnings,
             _autosave_json_caption(saved_final, autosave_target_value, image, display_rows, bbox_order_value),
         )
-        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
+        return final, display_rows, _preview_rows_snapshot_value(display_rows), _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def apply_overlay_edit(
         image,
         caption_text,
+        all_rows,
+        visible_rows,
         bbox_order_value,
         visible_choices,
         disable_auto_update_value,
@@ -997,14 +1097,17 @@ def build_tab(engine: Any) -> TabUI:
     ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         if bool(disable_auto_update_value):
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         payload = getattr(evt, "_data", {}) or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-        final, parsed, _warnings = apply_rows_to_json(caption_text, rows, bbox_order=bbox_order_value)
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        edited_index = payload.get("index") if isinstance(payload, dict) else None
+        merged_rows = _merge_visible_rows(all_rows, visible_choices, visible_rows)
+        merged_rows = _merge_preview_bbox_rows(merged_rows, _preview_rows_snapshot_value(rows, [edited_index]))
+        final, parsed, _warnings = apply_rows_to_json(caption_text, merged_rows, bbox_order=bbox_order_value)
         saved_final = _json_caption_for_save(final, beautify_saved_json_value, compact_json_value)
-        display_rows = _row_data(rows)
+        display_rows = _row_data(merged_rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=False)
         overlay = overlay_html(
             image,
@@ -1015,7 +1118,7 @@ def build_tab(engine: Any) -> TabUI:
             disable_auto_update=bool(disable_auto_update_value),
         )
         status = _autosave_json_caption(saved_final, autosave_target_value, image, display_rows, bbox_order_value)
-        return final, display_rows, _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
+        return final, display_rows, _preview_rows_snapshot_value(display_rows), _visible_df_value(display_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), overlay, status
 
     def add_box(all_rows, bbox_order_value, visible_choices):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -1025,14 +1128,15 @@ def build_tab(engine: Any) -> TabUI:
         selected = [choice for choice in choices if choice in set(visible_choices or [])]
         if choices:
             selected.append(choices[-1])
-        return next_rows, _visible_df_value(next_rows, selected, bbox_order_value), gr.update(choices=choices, value=selected)
+        return next_rows, _preview_rows_snapshot_value(next_rows), _visible_df_value(next_rows, selected, bbox_order_value), gr.update(choices=choices, value=selected)
 
     def clear_boxes(bbox_order_value):
-        return [], _df_value([], bbox_order_value), gr.update(choices=[], value=[])
+        return [], _preview_rows_snapshot_value([]), _df_value([], bbox_order_value), gr.update(choices=[], value=[])
 
     def update_box_visibility(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         return (
+            _preview_rows_snapshot_value(rows),
             _visible_df_value(rows, visible_choices, bbox_order_value),
             overlay_html(
                 image,
@@ -1055,6 +1159,7 @@ def build_tab(engine: Any) -> TabUI:
     def update_bbox_order(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         return (
+            _preview_rows_snapshot_value(rows),
             _visible_df_value(rows, visible_choices, bbox_order_value),
             overlay_html(
                 image,
@@ -1068,19 +1173,23 @@ def build_tab(engine: Any) -> TabUI:
 
     def update_auto_update_setting(image, rows, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
-        return overlay_html(
-            image,
-            rows,
-            interactive=True,
-            bbox_order=bbox_order_value,
-            visible_indices=_choice_indices(visible_choices),
-            disable_auto_update=bool(disable_auto_update_value),
+        return (
+            _preview_rows_snapshot_value(rows),
+            overlay_html(
+                image,
+                rows,
+                interactive=True,
+                bbox_order=bbox_order_value,
+                visible_indices=_choice_indices(visible_choices),
+                disable_auto_update=bool(disable_auto_update_value),
+            ),
         )
 
     def sync_generated_rows(image, rows, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         return (
+            _preview_rows_snapshot_value(rows),
             _visible_df_value(rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             overlay_html(
@@ -1149,7 +1258,7 @@ def build_tab(engine: Any) -> TabUI:
     single_event.then(
         sync_generated_rows,
         inputs=[input_image, all_element_rows, bbox_order, disable_auto_update],
-        outputs=[element_rows, box_visibility, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, box_visibility, json_overlay],
         queue=False,
     )
     input_image.change(lambda _image: {}, inputs=[input_image], outputs=autosave_target, queue=False)
@@ -1158,10 +1267,27 @@ def build_tab(engine: Any) -> TabUI:
     render_json_btn.click(
         render_json_boxes,
         inputs=[input_image, output_caption, components["preset_id"], bbox_order, disable_auto_update],
-        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
+        outputs=[output_caption, all_element_rows, preview_rows_snapshot, element_rows, box_visibility, json_overlay, single_status],
     )
     apply_box_btn.click(
         apply_box_edits,
+        inputs=[
+            input_image,
+            output_caption,
+            all_element_rows,
+            element_rows,
+            preview_rows_snapshot,
+            bbox_order,
+            box_visibility,
+            disable_auto_update,
+            autosave_target,
+            components["beautify_saved_json"],
+            components["compact_json"],
+        ],
+        outputs=[output_caption, all_element_rows, preview_rows_snapshot, element_rows, box_visibility, json_overlay, single_status],
+    )
+    json_overlay.click(
+        apply_overlay_edit,
         inputs=[
             input_image,
             output_caption,
@@ -1174,75 +1300,61 @@ def build_tab(engine: Any) -> TabUI:
             components["beautify_saved_json"],
             components["compact_json"],
         ],
-        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
-    )
-    json_overlay.click(
-        apply_overlay_edit,
-        inputs=[
-            input_image,
-            output_caption,
-            bbox_order,
-            box_visibility,
-            disable_auto_update,
-            autosave_target,
-            components["beautify_saved_json"],
-            components["compact_json"],
-        ],
-        outputs=[output_caption, all_element_rows, element_rows, box_visibility, json_overlay, single_status],
+        outputs=[output_caption, all_element_rows, preview_rows_snapshot, element_rows, box_visibility, json_overlay, single_status],
         queue=False,
     )
     add_event = add_box_btn.click(
         add_box,
         inputs=[all_element_rows, bbox_order, box_visibility],
-        outputs=[all_element_rows, element_rows, box_visibility],
+        outputs=[all_element_rows, preview_rows_snapshot, element_rows, box_visibility],
         queue=False,
     )
     add_event.then(
         update_box_visibility,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
     clear_event = clear_box_btn.click(
         clear_boxes,
         inputs=[bbox_order],
-        outputs=[all_element_rows, element_rows, box_visibility],
+        outputs=[all_element_rows, preview_rows_snapshot, element_rows, box_visibility],
         queue=False,
     )
     clear_event.then(
         update_box_visibility,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
     box_visibility.change(
         update_box_visibility,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
     bbox_order.change(
         update_bbox_order,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
     disable_auto_update.change(
         update_auto_update_setting,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=json_overlay,
+        outputs=[preview_rows_snapshot, json_overlay],
         queue=False,
     )
     check_all_boxes_btn.click(check_all_boxes, inputs=[all_element_rows], outputs=box_visibility, queue=False).then(
         update_box_visibility,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
     uncheck_all_boxes_btn.click(uncheck_all_boxes, inputs=[all_element_rows], outputs=box_visibility, queue=False).then(
         update_box_visibility,
         inputs=[input_image, all_element_rows, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, json_overlay],
+        outputs=[preview_rows_snapshot, element_rows, json_overlay],
         queue=False,
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from ..json_tools import (
     json_to_element_rows,
     normalize_json_output,
     overlay_html,
+    save_boxed_image,
 )
 from ..overlay_js import OVERLAY_EDIT_JS
 from .shared import TabUI
@@ -227,6 +229,61 @@ def _rows_from_snapshot(snapshot: Any, fallback: Any) -> list[list[Any]]:
     return _row_data(fallback)
 
 
+def _preview_rows_snapshot_value(rows: Any, edited_indices: Any = None) -> str:
+    indices: list[int] = []
+    for value in edited_indices or []:
+        try:
+            index = int(value)
+        except Exception:
+            continue
+        if index >= 0 and index not in indices:
+            indices.append(index)
+    return json.dumps({"rows": _row_data(rows), "edited_indices": indices}, ensure_ascii=False)
+
+
+def _preview_rows_from_snapshot(snapshot: Any) -> tuple[list[list[Any]] | None, list[int]]:
+    if not isinstance(snapshot, str) or not snapshot.strip():
+        return None, []
+    try:
+        payload = json.loads(snapshot)
+    except Exception:
+        return None, []
+    if isinstance(payload, dict):
+        rows = payload.get("rows")
+        edited_values = payload.get("edited_indices")
+    else:
+        rows = payload
+        edited_values = range(len(rows)) if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return None, []
+    edited_indices: list[int] = []
+    for value in edited_values or []:
+        try:
+            index = int(value)
+        except Exception:
+            continue
+        if index >= 0 and index not in edited_indices:
+            edited_indices.append(index)
+    return _row_data(rows), edited_indices
+
+
+def _merge_preview_bbox_rows(rows: Any, preview_snapshot: Any) -> list[list[Any]]:
+    merged = _row_data(rows)
+    preview_rows, edited_indices = _preview_rows_from_snapshot(preview_snapshot)
+    if preview_rows is None or not edited_indices:
+        return merged
+    for index in edited_indices:
+        if index >= len(merged) or index >= len(preview_rows):
+            continue
+        preview_row = list(preview_rows[index]) + [""] * max(0, 8 - len(preview_rows[index]))
+        if not all(str(value).strip() for value in preview_row[1:5]):
+            continue
+        merged_row = list(merged[index]) + [""] * max(0, 8 - len(merged[index]))
+        merged_row[1:5] = preview_row[1:5]
+        merged[index] = merged_row[: len(merged[index]) if len(merged[index]) >= 8 else 8]
+    return merged
+
+
 def _cell_text(value: Any) -> str:
     return "" if value is None else str(value)
 
@@ -379,12 +436,117 @@ def _sidecar_json_for_image(image_path: str | Path | None) -> Path | None:
         boxed_source_candidate = path.with_name(path.stem[: -len("_boxed")] + ".json")
         if boxed_source_candidate.exists():
             return boxed_source_candidate
-    fallback_stem = path.stem[: -len("_boxed")] if path.stem.endswith("_boxed") else path.stem
+    return None
+
+
+def _json_save_path_for_image(image_path: str | Path | None, loaded_json_path: str | Path | None = None) -> Path | None:
+    loaded_value = str(loaded_json_path or "").strip()
+    if loaded_value:
+        return Path(loaded_value)
+    if not image_path:
+        return None
+    path = Path(image_path)
+    direct_sidecar = path.with_suffix(".json")
+    if direct_sidecar.exists():
+        return direct_sidecar
+    if path.stem.endswith("_boxed"):
+        boxed_source_sidecar = path.with_name(path.stem[: -len("_boxed")] + ".json")
+        return boxed_source_sidecar
+    return direct_sidecar
+
+
+def _boxed_source_for_image(image_path: str | Path | None) -> Path | None:
+    if not image_path:
+        return None
+    path = Path(image_path)
+    if not path.exists():
+        return None
+    if not path.stem.endswith("_boxed"):
+        return path
+    source_stem = path.stem[: -len("_boxed")]
+    for suffix in sorted(IMAGE_EXTENSIONS):
+        candidate = path.with_name(source_stem + suffix)
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _boxed_save_path_for_json(json_path: Path) -> Path:
+    return json_path.with_name(f"{json_path.stem}_boxed.png")
+
+
+def _update_output_metadata_for_save(json_path: Path, caption_text: str, boxed_image_path: Path | None) -> str:
+    metadata_path = json_path.parent / "metadata.json"
+    if not metadata_path.exists():
+        return ""
     try:
-        matches = sorted(OUTPUTS_DIR.rglob(f"{fallback_stem}.json"), key=lambda item: str(item).lower())
-    except Exception:
-        matches = []
-    return matches[-1] if matches else None
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return "Metadata was not updated because metadata.json is not an object."
+        metadata.update(
+            {
+                "caption_final": caption_text,
+                "box_edits_autosaved": True,
+                "box_edits_autosaved_at": datetime.now(timezone.utc).isoformat(),
+                "caption_path": str(json_path),
+                "output_run_dir": str(json_path.parent),
+            }
+        )
+        if boxed_image_path is not None:
+            metadata["boxed_image_path"] = str(boxed_image_path)
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:
+        return f"Metadata update skipped: {type(exc).__name__}: {exc}"
+    return ""
+
+
+def _save_json_builder_edits(
+    image_path: str | Path | None,
+    loaded_json_path: str | Path | None,
+    caption_text: str,
+    rows: Any,
+    bbox_order: str,
+) -> str:
+    json_path = _json_save_path_for_image(image_path, loaded_json_path)
+    if json_path is None:
+        return html_message("info", "JSON box edits applied. Save skipped because no preview image is loaded.")
+    try:
+        json.loads(caption_text)
+    except Exception as exc:
+        return html_message(
+            "error",
+            "JSON box edits applied in the UI, but save was blocked because the edited JSON does not parse: "
+            + html.escape(f"{type(exc).__name__}: {exc}"),
+        )
+
+    boxed_note = ""
+    metadata_note = ""
+    boxed_image_path: Path | None = None
+    try:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(caption_text, encoding="utf-8")
+        source_path = _boxed_source_for_image(image_path)
+        if source_path is None:
+            boxed_note = "Boxed PNG was not updated because the source image path is unavailable."
+        else:
+            boxed_image_path = save_boxed_image(source_path, rows, _boxed_save_path_for_json(json_path), bbox_order=bbox_order)
+            if boxed_image_path is None:
+                boxed_note = "Boxed PNG was not updated because there are no valid boxes to render."
+            else:
+                boxed_note = f"Boxed PNG saved to {boxed_image_path}."
+        metadata_note = _update_output_metadata_for_save(json_path, caption_text, boxed_image_path)
+    except Exception as exc:
+        return html_message(
+            "error",
+            "JSON box edits applied in the UI, but save failed: " + html.escape(f"{type(exc).__name__}: {exc}"),
+        )
+
+    message = "JSON box edits applied and saved to " + html.escape(str(json_path)) + "."
+    if boxed_note:
+        message += "<br>" + html.escape(boxed_note)
+    if metadata_note:
+        message += "<br>" + html.escape(metadata_note)
+    return html_message("success", message)
 
 
 def _fields_from_json(parsed: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str, str]:
@@ -418,6 +580,14 @@ def build_tab() -> TabUI:
         elem_classes=["jc-hidden-sync"],
         interactive=True,
     )
+    preview_rows_snapshot = gr.Textbox(
+        value=_preview_rows_snapshot_value([DEFAULT_BUILDER_ROW.copy()]),
+        label="Preview Rows Snapshot",
+        elem_id="jc-json-preview-rows-snapshot",
+        elem_classes=["jc-hidden-sync"],
+        interactive=True,
+    )
+    loaded_json_path = gr.State("")
 
     with gr.Row(equal_height=False):
         with gr.Column(scale=4, elem_classes=["jc-compact"]):
@@ -467,7 +637,7 @@ def build_tab() -> TabUI:
                 with gr.Row():
                     generate_btn = gr.Button("Generate JSON", elem_classes=["btn-json-build"])
                     preview_btn = gr.Button("Preview Boxes", elem_classes=["btn-qwen-render"])
-                    apply_box_btn = gr.Button("Apply Box Edits", elem_classes=["btn-qwen-apply"])
+                    apply_box_btn = gr.Button("Apply Box Edits & Save", elem_classes=["btn-qwen-apply"])
                     add_row_btn = gr.Button("Add Box", elem_classes=["btn-json-add"])
                     clear_rows_btn = gr.Button("Clear Boxes", elem_classes=["btn-reset-preset"])
                     import_btn = gr.Button("Import JSON Rows", elem_classes=["btn-load-preset"])
@@ -581,7 +751,16 @@ def build_tab() -> TabUI:
             bbox_order_value,
         )
         preview = _overlay(image_path, ratio_value, width_value, height_value, merged_rows, bbox_order_value, visible, disable_auto_update_value)
-        return json_text, merged_rows, _rows_snapshot_value(merged_rows), _table_editor_html(merged_rows, visible, bbox_order_value), gr.update(choices=choices, value=visible), preview, ""
+        return (
+            json_text,
+            merged_rows,
+            _rows_snapshot_value(merged_rows),
+            _preview_rows_snapshot_value(merged_rows),
+            _table_editor_html(merged_rows, visible, bbox_order_value),
+            gr.update(choices=choices, value=visible),
+            preview,
+            "",
+        )
 
     def preview_boxes(image_path, ratio_value, width_value, height_value, all_rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -590,24 +769,55 @@ def build_tab() -> TabUI:
         return (
             merged_rows,
             _rows_snapshot_value(merged_rows),
+            _preview_rows_snapshot_value(merged_rows),
             _table_editor_html(merged_rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             _overlay(image_path, ratio_value, width_value, height_value, merged_rows, bbox_order_value, visible, disable_auto_update_value),
         )
 
-    def apply_box_edits(image_path, ratio_value, width_value, height_value, json_text, all_rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
+    def apply_box_edits(
+        image_path,
+        ratio_value,
+        width_value,
+        height_value,
+        json_text,
+        all_rows,
+        snapshot_value,
+        preview_snapshot,
+        loaded_json_path_value,
+        bbox_order_value,
+        visible_choices,
+        disable_auto_update_value,
+    ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         merged_rows = _rows_from_snapshot(snapshot_value, all_rows)
-        final, parsed, warnings = apply_rows_to_json(json_text, merged_rows, bbox_order=bbox_order_value)
+        merged_rows = _merge_preview_bbox_rows(merged_rows, preview_snapshot)
+        source_json = str(json_text or "").strip()
+        if not source_json:
+            source_json = json.dumps(
+                {
+                    "aspect_ratio": _ratio(ratio_value, width_value, height_value),
+                    "high_level_description": "",
+                    "compositional_deconstruction": {"background": "", "elements": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        final, parsed, warnings = apply_rows_to_json(source_json, merged_rows, bbox_order=bbox_order_value)
         display_rows = _row_data(merged_rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=True)
-        status_html = html_message("success", "JSON box edits applied.")
+        save_status = _save_json_builder_edits(image_path, loaded_json_path_value, final, display_rows, bbox_order_value)
+        status_html = save_status
         if warnings:
-            status_html = html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + "\n".join(warnings) + "</pre>")
+            status_html = (
+                html_message("info", "Applied box edits after JSON repair fallback:<br><pre>" + html.escape("\n".join(warnings)) + "</pre>")
+                + save_status
+            )
         return (
             final,
             display_rows,
             _rows_snapshot_value(display_rows),
+            _preview_rows_snapshot_value(display_rows),
             _table_editor_html(display_rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             _overlay(image_path, ratio_value, width_value, height_value, display_rows, bbox_order_value, visible, disable_auto_update_value),
@@ -625,13 +835,14 @@ def build_tab() -> TabUI:
         return (
             next_rows,
             _rows_snapshot_value(next_rows),
+            _preview_rows_snapshot_value(next_rows),
             _table_editor_html(next_rows, selected, bbox_order_value),
             gr.update(choices=choices, value=selected),
             _overlay(image_path, ratio_value, width_value, height_value, next_rows, bbox_order_value, selected, disable_auto_update_value),
         )
 
     def clear_rows(bbox_order_value):
-        return [], _rows_snapshot_value([]), _table_editor_html([], [], bbox_order_value), gr.update(choices=[], value=[])
+        return [], _rows_snapshot_value([]), _preview_rows_snapshot_value([]), _table_editor_html([], [], bbox_order_value), gr.update(choices=[], value=[])
 
     def import_json(json_text, image_path, ratio_value, width_value, height_value, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
@@ -641,6 +852,7 @@ def build_tab() -> TabUI:
             return (
                 [],
                 _rows_snapshot_value([]),
+                _preview_rows_snapshot_value([]),
                 _table_editor_html([], [], bbox_order_value),
                 gr.update(choices=[], value=[]),
                 "",
@@ -665,6 +877,7 @@ def build_tab() -> TabUI:
         return (
             rows,
             _rows_snapshot_value(rows),
+            _preview_rows_snapshot_value(rows),
             _table_editor_html(rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             pretty,
@@ -678,12 +891,14 @@ def build_tab() -> TabUI:
         if not selected_image:
             return (
                 gr.update(),
+                "",
                 gr.update(),
                 gr.update(),
                 gr.update(),
                 "",
                 [],
                 _rows_snapshot_value([]),
+                _preview_rows_snapshot_value([]),
                 _table_editor_html([], [], bbox_order_value),
                 gr.update(choices=[], value=[]),
                 "",
@@ -711,12 +926,14 @@ def build_tab() -> TabUI:
             empty_overlay = _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, [], bbox_order_value, [], disable_auto_update_value)
             return (
                 str(image_path),
+                str(_json_save_path_for_image(image_path) or ""),
                 ratio_update,
                 width_update,
                 height_update,
                 "",
                 [],
                 _rows_snapshot_value([]),
+                _preview_rows_snapshot_value([]),
                 _table_editor_html([], [], bbox_order_value),
                 gr.update(choices=[], value=[]),
                 "",
@@ -737,12 +954,14 @@ def build_tab() -> TabUI:
             empty_overlay = _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, [], bbox_order_value, [], disable_auto_update_value)
             return (
                 str(image_path),
+                str(sidecar),
                 ratio_update,
                 width_update,
                 height_update,
                 text,
                 [],
                 _rows_snapshot_value([]),
+                _preview_rows_snapshot_value([]),
                 _table_editor_html([], [], bbox_order_value),
                 gr.update(choices=[], value=[]),
                 "",
@@ -763,12 +982,14 @@ def build_tab() -> TabUI:
         status_html = html_message("success", f"Loaded {image_path.name} and {sidecar.name}.")
         return (
             str(image_path),
+            str(sidecar),
             ratio_update,
             width_update,
             height_update,
             pretty,
             rows,
             _rows_snapshot_value(rows),
+            _preview_rows_snapshot_value(rows),
             _table_editor_html(rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             *fields,
@@ -776,35 +997,62 @@ def build_tab() -> TabUI:
             status_html,
         )
 
-    def load_preview_image_choice(selected_image, bbox_order_value, disable_auto_update_value):
+    def load_preview_image_choice(selected_image, current_loaded_json_path, bbox_order_value, disable_auto_update_value):
+        sidecar = _sidecar_json_for_image(selected_image)
+        image_text = str(selected_image or "").replace("\\", "/").lower()
+        is_gradio_temp = "/temp/gradio/" in image_text or "/appdata/local/temp/gradio/" in image_text
+        if sidecar is None and (current_loaded_json_path or is_gradio_temp):
+            return tuple(gr.update() for _component in load_outputs[1:])
         return load_output_choice(selected_image, bbox_order_value, disable_auto_update_value)[1:]
 
     def update_box_visibility(image_path, ratio_value, width_value, height_value, rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         current_rows = _rows_from_snapshot(snapshot_value, rows)
         return (
+            _preview_rows_snapshot_value(current_rows),
             _table_editor_html(current_rows, visible_choices, bbox_order_value),
             _overlay(image_path, ratio_value, width_value, height_value, current_rows, bbox_order_value, visible_choices, disable_auto_update_value),
         )
 
     def update_auto_update_setting(image_path, ratio_value, width_value, height_value, rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
         current_rows = _rows_from_snapshot(snapshot_value, rows)
-        return _overlay(image_path, ratio_value, width_value, height_value, current_rows, bbox_order_value, visible_choices, disable_auto_update_value)
+        return (
+            _preview_rows_snapshot_value(current_rows),
+            _overlay(image_path, ratio_value, width_value, height_value, current_rows, bbox_order_value, visible_choices, disable_auto_update_value),
+        )
 
-    def apply_overlay_edit(image_path, ratio_value, width_value, height_value, json_text, bbox_order_value, visible_choices, disable_auto_update_value, evt: gr.EventData):
+    def apply_overlay_edit(
+        image_path,
+        ratio_value,
+        width_value,
+        height_value,
+        json_text,
+        all_rows,
+        snapshot_value,
+        bbox_order_value,
+        visible_choices,
+        disable_auto_update_value,
+        evt: gr.EventData,
+    ):
         bbox_order_value = clean_bbox_order(bbox_order_value)
+        if bool(disable_auto_update_value):
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         payload = getattr(evt, "_data", {}) or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-        final, parsed, warnings = apply_rows_to_json(json_text, rows, bbox_order=bbox_order_value)
-        display_rows = _row_data(rows)
+        edited_index = payload.get("index") if isinstance(payload, dict) else None
+        merged_rows = _rows_from_snapshot(snapshot_value, all_rows)
+        merged_rows = _merge_preview_bbox_rows(merged_rows, _preview_rows_snapshot_value(rows, [edited_index]))
+        final, parsed, warnings = apply_rows_to_json(json_text, merged_rows, bbox_order=bbox_order_value)
+        display_rows = _row_data(merged_rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=True)
-        status_html = "" if not warnings else html_message("info", "JSON repaired while applying overlay edit:<br><pre>" + "\n".join(warnings) + "</pre>")
+        status_html = "" if not warnings else html_message("info", "JSON repaired while applying overlay edit:<br><pre>" + html.escape("\n".join(warnings)) + "</pre>")
         return (
             final,
             display_rows,
             _rows_snapshot_value(display_rows),
+            _preview_rows_snapshot_value(display_rows),
             _table_editor_html(display_rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             _overlay(image_path, ratio_value, width_value, height_value, display_rows, bbox_order_value, visible, disable_auto_update_value),
@@ -822,6 +1070,7 @@ def build_tab() -> TabUI:
         return (
             normalized_rows,
             _rows_snapshot_value(normalized_rows),
+            _preview_rows_snapshot_value(normalized_rows),
             _table_editor_html(normalized_rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             _overlay(image_path, ratio_value, width_value, height_value, normalized_rows, bbox_order_value, visible, disable_auto_update_value),
@@ -861,29 +1110,42 @@ def build_tab() -> TabUI:
     generate_btn.click(
         generate_json,
         inputs=generate_inputs,
-        outputs=[json_output, all_element_rows, rows_snapshot, element_rows, box_visibility, overlay, status],
+        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, status],
     )
     preview_btn.click(
         preview_boxes,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[all_element_rows, rows_snapshot, element_rows, box_visibility, overlay],
+        outputs=[all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay],
         queue=False,
     )
     apply_box_btn.click(
         apply_box_edits,
-        inputs=[image, aspect_ratio, canvas_width, canvas_height, json_output, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[json_output, all_element_rows, rows_snapshot, element_rows, box_visibility, overlay, status],
+        inputs=[
+            image,
+            aspect_ratio,
+            canvas_width,
+            canvas_height,
+            json_output,
+            all_element_rows,
+            rows_snapshot,
+            preview_rows_snapshot,
+            loaded_json_path,
+            bbox_order,
+            box_visibility,
+            disable_auto_update,
+        ],
+        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, status],
     )
     add_row_btn.click(
         add_row,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[all_element_rows, rows_snapshot, element_rows, box_visibility, overlay],
+        outputs=[all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay],
         queue=False,
     )
-    clear_rows_btn.click(clear_rows, inputs=[bbox_order], outputs=[all_element_rows, rows_snapshot, element_rows, box_visibility], queue=False).then(
+    clear_rows_btn.click(clear_rows, inputs=[bbox_order], outputs=[all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility], queue=False).then(
         update_box_visibility,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, overlay],
+        outputs=[preview_rows_snapshot, element_rows, overlay],
         queue=False,
     )
     import_btn.click(
@@ -892,6 +1154,7 @@ def build_tab() -> TabUI:
         outputs=[
             all_element_rows,
             rows_snapshot,
+            preview_rows_snapshot,
             element_rows,
             box_visibility,
             json_output,
@@ -912,48 +1175,22 @@ def build_tab() -> TabUI:
     box_visibility.change(
         update_box_visibility,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, overlay],
+        outputs=[preview_rows_snapshot, element_rows, overlay],
         queue=False,
     )
     bbox_order.change(
         update_box_visibility,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, overlay],
+        outputs=[preview_rows_snapshot, element_rows, overlay],
         queue=False,
     )
     disable_auto_update.change(
         update_auto_update_setting,
         inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=overlay,
+        outputs=[preview_rows_snapshot, overlay],
         queue=False,
     )
-    json_overlay_inputs = [image, aspect_ratio, canvas_width, canvas_height, json_output, bbox_order, box_visibility, disable_auto_update]
-    overlay.click(
-        apply_overlay_edit,
-        inputs=json_overlay_inputs,
-        outputs=[json_output, all_element_rows, rows_snapshot, element_rows, box_visibility, overlay, status],
-        queue=False,
-    )
-    element_rows.click(
-        apply_table_edit,
-        inputs=[image, aspect_ratio, canvas_width, canvas_height, bbox_order, box_visibility, disable_auto_update],
-        outputs=[all_element_rows, rows_snapshot, element_rows, box_visibility, overlay],
-        queue=False,
-    )
-    check_all_boxes_btn.click(check_all_boxes, inputs=[all_element_rows, rows_snapshot], outputs=box_visibility, queue=False).then(
-        update_box_visibility,
-        inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, overlay],
-        queue=False,
-    )
-    uncheck_all_boxes_btn.click(uncheck_all_boxes, inputs=[all_element_rows, rows_snapshot], outputs=box_visibility, queue=False).then(
-        update_box_visibility,
-        inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
-        outputs=[element_rows, overlay],
-        queue=False,
-    )
-    refresh_outputs_btn.click(refresh_output_choices, outputs=output_image, queue=False)
-    load_outputs = [
+    json_overlay_inputs = [
         image,
         aspect_ratio,
         canvas_width,
@@ -961,6 +1198,45 @@ def build_tab() -> TabUI:
         json_output,
         all_element_rows,
         rows_snapshot,
+        bbox_order,
+        box_visibility,
+        disable_auto_update,
+    ]
+    overlay.click(
+        apply_overlay_edit,
+        inputs=json_overlay_inputs,
+        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, status],
+        queue=False,
+    )
+    element_rows.click(
+        apply_table_edit,
+        inputs=[image, aspect_ratio, canvas_width, canvas_height, bbox_order, box_visibility, disable_auto_update],
+        outputs=[all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay],
+        queue=False,
+    )
+    check_all_boxes_btn.click(check_all_boxes, inputs=[all_element_rows, rows_snapshot], outputs=box_visibility, queue=False).then(
+        update_box_visibility,
+        inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
+        outputs=[preview_rows_snapshot, element_rows, overlay],
+        queue=False,
+    )
+    uncheck_all_boxes_btn.click(uncheck_all_boxes, inputs=[all_element_rows, rows_snapshot], outputs=box_visibility, queue=False).then(
+        update_box_visibility,
+        inputs=[image, aspect_ratio, canvas_width, canvas_height, all_element_rows, rows_snapshot, bbox_order, box_visibility, disable_auto_update],
+        outputs=[preview_rows_snapshot, element_rows, overlay],
+        queue=False,
+    )
+    refresh_outputs_btn.click(refresh_output_choices, outputs=output_image, queue=False)
+    load_outputs = [
+        image,
+        loaded_json_path,
+        aspect_ratio,
+        canvas_width,
+        canvas_height,
+        json_output,
+        all_element_rows,
+        rows_snapshot,
+        preview_rows_snapshot,
         element_rows,
         box_visibility,
         high_level,
@@ -977,6 +1253,6 @@ def build_tab() -> TabUI:
     ]
     output_image.change(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
     load_output_btn.click(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
-    image.change(load_preview_image_choice, inputs=[image, bbox_order, disable_auto_update], outputs=load_outputs[1:], queue=False)
+    image.change(load_preview_image_choice, inputs=[image, loaded_json_path, bbox_order, disable_auto_update], outputs=load_outputs[1:], queue=False)
 
     return TabUI(key="json_builder", order=[], defaults={}, inputs=[])

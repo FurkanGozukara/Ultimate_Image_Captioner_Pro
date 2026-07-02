@@ -93,7 +93,7 @@
 - Qwen JSON prompt generator is so amazing that it has a specific field for written text on images, analyze below image to understand logic
 - Pay attention to JSON Elements table you will see text
 - You can fully edit the JSON Elements table and re-generate, auto generated JSON as you wish
-  - When you click Apply Box Edits it will overwrite generated JSON file and boxes drawn image in respected output folder
+  - When you click Apply Box Edits & Save it will overwrite generated JSON file and boxes drawn image in respected output folder
  
 <img height="600" alt="6" src="https://github.com/user-attachments/assets/6bfcc611-a5c7-4284-9584-e7664f079398" />
 

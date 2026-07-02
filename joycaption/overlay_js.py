@@ -16,6 +16,31 @@ if (!element.dataset.jcQwenOverlayBound) {
     }
   };
 
+  const editedIndicesForFrame = (frame) => {
+    try {
+      const indices = JSON.parse(frame.dataset.previewEditedIndices || "[]");
+      return Array.isArray(indices) ? indices.map(Number).filter(Number.isFinite) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const syncPreviewSnapshot = (frame) => {
+    const target = document.querySelector("#jc-json-preview-rows-snapshot textarea, #jc-json-preview-rows-snapshot input");
+    if (!target) return;
+    const value = JSON.stringify({
+      rows: rowsForFrame(frame),
+      edited_indices: editedIndicesForFrame(frame),
+    });
+    if (target.value === value) return;
+    const proto = target.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(target, value);
+    else target.value = value;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
   const frameRect = (frame) => {
     const img = frame.querySelector(".jc-overlay-image");
     const rect = (img && img.naturalWidth > 0) ? img.getBoundingClientRect() : frame.getBoundingClientRect();
@@ -69,7 +94,14 @@ if (!element.dataset.jcQwenOverlayBound) {
       rows[activeIndex][3] = yMax;
       rows[activeIndex][4] = xMax;
     }
-    trigger("click", { action: "box-edit", rows, index: activeIndex });
+    frame.dataset.rows = JSON.stringify(rows);
+    const edited = new Set(editedIndicesForFrame(frame));
+    edited.add(activeIndex);
+    frame.dataset.previewEditedIndices = JSON.stringify([...edited]);
+    syncPreviewSnapshot(frame);
+    if (frame.dataset.disableAutoUpdate !== "1") {
+      trigger("click", { action: "box-edit", rows, index: activeIndex });
+    }
   };
 
   const bindFrame = (frame) => {
@@ -146,7 +178,10 @@ if (!element.dataset.jcQwenOverlayBound) {
   };
 
   const install = () => {
-    element.querySelectorAll(".jc-overlay-frame").forEach(bindFrame);
+    element.querySelectorAll(".jc-overlay-frame").forEach((frame) => {
+      bindFrame(frame);
+      syncPreviewSnapshot(frame);
+    });
   };
 
   watch("value", () => queueMicrotask(install));
