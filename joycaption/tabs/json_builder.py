@@ -33,7 +33,7 @@ from ..json_tools import (
     save_boxed_image,
 )
 from ..overlay_js import OVERLAY_EDIT_JS
-from .shared import TabUI
+from .shared import TabUI, run_open_outputs
 
 
 DEFAULT_BBOX_ORDER = "yxyx"
@@ -1136,6 +1136,7 @@ def build_tab() -> TabUI:
                     )
                     check_all_boxes_btn = gr.Button("Check All", elem_classes=["btn-load-preset"], scale=1)
                     uncheck_all_boxes_btn = gr.Button("Uncheck All", elem_classes=["btn-reset-preset"], scale=1)
+                    open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"], scale=1)
                 box_visibility = gr.CheckboxGroup(
                     choices=_box_choices([DEFAULT_BUILDER_ROW.copy()]),
                     value=_box_choices([DEFAULT_BUILDER_ROW.copy()]),
@@ -1888,6 +1889,7 @@ def build_tab() -> TabUI:
         outputs=[preview_rows_snapshot, element_rows, overlay],
         queue=False,
     )
+    open_outputs_btn.click(run_open_outputs, outputs=status, queue=False)
     refresh_outputs_btn.click(refresh_output_choices, outputs=output_image, queue=False)
     load_outputs = [
         image,
