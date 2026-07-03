@@ -21,6 +21,26 @@
    -  Runpod\_SimplePod\_Ultimate\_Caption\_Instructions.txt        
 - **The application runs on Torch 2.11 with CUDA 13, supports literally every GPU out there including server GPUs**    
    - Moreover, we are using latest libraries such as Triton 3.7.1, Transformers 5.12.1, Bitsandbytes 0.49.2 thus we have the ultimate speed
+ 
+## 3 July 2026 V1.2
+
+- Qwen image captioning made more robust 
+   - Such as in some cases it was adding imgur links and not anymore this bug exists
+- Apply Box Edits button is now Apply Box Edits & Save so every edit is automatically saved in the outputs folder
+   - Overwrites generated json file and re-generates boxed image
+- The changes you made in JSON Box Preview or JSON Elements were not being saved in outputs folder and now they will be saved
+- JSON Prompt Builder significantly improved
+   - Now it will accurately recognize selected file's accurate outputs folder path and all changes will be saved
+   - If your file is not in outputs folder, use Browse File to load file
+   - Now lets say you started empty design and saved, it will be saved in a new folder inside outputs folder and keep using that folder as long as you work on that json prompt
+- When you were switching between folders, it was not properly updating displayed values and this issue fixed
+- Now when you switch Saved Outputs tab it will auto refresh and show latest
+   - Now Saved Outputs tab is auto sorted by latest but you can re-sort by clicking display headers
+- To update just run Windows_Install_Update_App.bat file
+   - Zip file is still same
+ 
+<img width="1021" height="851" alt="image" src="https://github.com/user-attachments/assets/b6bbb10d-7e97-41e1-9953-6126dc4b1537" />
+
 
 ## Ultimate Image Captioner Pro Features
 
