@@ -94,7 +94,6 @@ def build_tab(engine: Any) -> TabUI:
                 open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"])
             output_prompt = gr.Textbox(label="Prompt Used", lines=4, elem_classes=["jc-output"])
             output_caption = gr.Textbox(label="Caption", lines=8, elem_classes=["jc-output"])
-            save_info = gr.Textbox(label="Save Information", lines=4, elem_classes=["jc-status"])
 
         with gr.Column(scale=4, elem_classes=["jc-compact"]):
             with gr.Accordion("Caption Prompt", open=True):
@@ -162,6 +161,8 @@ def build_tab(engine: Any) -> TabUI:
                         label="Attention Backend",
                         allow_custom_value=False,
                     )
+
+    save_info = gr.Textbox(label="Save Information", lines=4, elem_classes=["jc-status"])
 
     with gr.Accordion("Universal Folder Batch", open=True):
         with gr.Row():

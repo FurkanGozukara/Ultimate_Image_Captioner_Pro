@@ -99,7 +99,6 @@ def build_tab(engine: Any) -> TabUI:
 
     with gr.Tabs():
         with gr.Tab("Single Image", render_children=True):
-            single_status = gr.HTML("")
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1):
                     input_image = gr.Image(type="filepath", label="Upload Image", height=440)
@@ -233,6 +232,8 @@ def build_tab(engine: Any) -> TabUI:
                     components["caption_prefix"] = gr.Textbox(label="Text Prefix", value=DEFAULTS["caption_prefix"])
                     components["caption_suffix"] = gr.Textbox(label="Text Suffix", value=DEFAULTS["caption_suffix"])
                 build_replace_pair_controls(components, DEFAULTS)
+
+    single_status = gr.HTML("")
 
     with gr.Accordion("Extra Options", open=True):
         with gr.Row():
