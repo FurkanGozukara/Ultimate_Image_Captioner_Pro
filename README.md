@@ -39,7 +39,7 @@
 - To update just run Windows_Install_Update_App.bat file
    - Zip file is still same
  
-<img width="1021" height="851" alt="image" src="https://github.com/user-attachments/assets/b6bbb10d-7e97-41e1-9953-6126dc4b1537" />
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/b6bbb10d-7e97-41e1-9953-6126dc4b1537" />
 
 
 ## Ultimate Image Captioner Pro Features
