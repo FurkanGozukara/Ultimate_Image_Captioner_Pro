@@ -254,6 +254,43 @@ def _aspect_controls_for_image(image_path: str | Path | None) -> tuple[Any, Any,
     return gr.update(value=ratio_value), gr.update(value=width), gr.update(value=height)
 
 
+def _pick_image_file_path(current_path: str | Path | None = None) -> tuple[str, str]:
+    try:
+        from tkinter import Tk, filedialog
+    except Exception as exc:
+        return str(current_path or ""), f"File picker is unavailable: {type(exc).__name__}: {exc}"
+
+    current_value = str(current_path or "").strip()
+    initial_dir = str(OUTPUTS_DIR if OUTPUTS_DIR.exists() else Path.cwd())
+
+    root = None
+    try:
+        root = Tk()
+        root.withdraw()
+        try:
+            root.wm_attributes("-topmost", 1)
+        except Exception:
+            pass
+        file_path = filedialog.askopenfilename(
+            title="Select preview image",
+            initialdir=initial_dir,
+            filetypes=(
+                ("Image files", "*.png *.jpg *.jpeg *.jfif *.webp *.bmp *.gif *.tif *.tiff"),
+                ("All files", "*.*"),
+            ),
+        )
+    except Exception as exc:
+        return current_value, f"Failed to open file picker: {type(exc).__name__}: {exc}"
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+    return str(Path(file_path)) if file_path else current_value, ""
+
+
 def _outputs_image_choices() -> list[tuple[str, str]]:
     choices: list[tuple[str, str]] = [(OUTPUT_NOT_SELECTED_LABEL, OUTPUT_NOT_SELECTED_VALUE)]
     if not OUTPUTS_DIR.exists():
@@ -1054,6 +1091,7 @@ def build_tab() -> TabUI:
         with gr.Column(scale=4, elem_classes=["jc-compact"]):
             gr.HTML('<span data-jc-upload-metadata-capture="1"></span>', elem_classes=["jc-hidden-sync"])
             image = gr.Image(type="filepath", label="Optional Preview Image", height=390, elem_id="jc-json-preview-image")
+            pick_image_btn = gr.Button("Browse File", elem_classes=["btn-refresh"])
             with gr.Accordion("Load / Continue From Outputs", open=True):
                 output_image = gr.Dropdown(
                     choices=_outputs_image_choices(),
@@ -1586,6 +1624,36 @@ def build_tab() -> TabUI:
             )
         return load_output_choice(selected_image, bbox_order_value, disable_auto_update_value)[1:]
 
+    def browse_preview_image(current_image, bbox_order_value, disable_auto_update_value):
+        picked_path, error = _pick_image_file_path(current_image)
+        if error:
+            return tuple(gr.update() for _component in load_outputs[:-1]) + (html_message("error", error),)
+        if not picked_path:
+            return tuple(gr.update() for _component in load_outputs[:-1]) + (html_message("info", "File pick cancelled."),)
+
+        picked = Path(picked_path)
+        if picked.stem.endswith("_boxed"):
+            source = _boxed_source_for_image(picked)
+            if source is not None and source.exists():
+                picked = source
+        if not picked.exists() or picked.suffix.lower() not in IMAGE_EXTENSIONS:
+            return tuple(gr.update() for _component in load_outputs[:-1]) + (
+                html_message("error", f"Select a valid image file: {html.escape(str(picked))}"),
+            )
+
+        sidecar = _sidecar_json_for_image(picked)
+        if sidecar is None:
+            return (
+                str(picked),
+                *fresh_preview_state(
+                    str(picked),
+                    clean_bbox_order(bbox_order_value),
+                    disable_auto_update_value,
+                    html_message("info", "Picked preview image. Apply Box Edits & Save will create a new output folder."),
+                ),
+            )
+        return load_output_choice(str(picked), bbox_order_value, disable_auto_update_value)
+
     def update_box_visibility(image_path, ratio_value, width_value, height_value, rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         current_rows = _rows_from_snapshot(snapshot_value, rows)
@@ -1848,6 +1916,12 @@ def build_tab() -> TabUI:
         boxed_preview,
         status,
     ]
+    pick_image_btn.click(
+        browse_preview_image,
+        inputs=[image, bbox_order, disable_auto_update],
+        outputs=load_outputs,
+        queue=False,
+    )
     output_image.change(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
     load_output_btn.click(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
     image.change(
