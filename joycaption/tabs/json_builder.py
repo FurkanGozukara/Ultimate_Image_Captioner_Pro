@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,9 +11,18 @@ from typing import Any
 import gradio as gr
 from PIL import Image, ImageOps
 
-from ..common import IMAGE_EXTENSIONS, OUTPUTS_DIR, html_message, natural_sort_key
+from ..common import (
+    IMAGE_EXTENSIONS,
+    OUTPUTS_DIR,
+    copy_image_if_needed,
+    html_message,
+    natural_sort_key,
+    next_numbered_output_dir,
+    write_generation_metadata,
+)
 from ..json_tools import (
     EMPTY_ELEMENT_ROW,
+    _file_url,
     apply_rows_to_json,
     build_ideogram_json,
     clean_bbox_order,
@@ -45,6 +55,8 @@ WRAPPING_TABLE_COLUMNS = {5, 7}
 ASPECT_RATIO_CHOICES = ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "Custom"]
 DEFAULT_BUILDER_ROW = ["obj", 80, 80, 360, 360, "", "box 1", ""]
 BUILDER_PRESET_ID = "i4_official_v1_app_compare"
+OUTPUT_NOT_SELECTED_LABEL = "Not-Selected"
+OUTPUT_NOT_SELECTED_VALUE = ""
 
 
 TABLE_EDIT_JS = r"""
@@ -154,6 +166,57 @@ if (!element.dataset.jcJsonTableBound) {
 """
 
 
+UPLOAD_METADATA_JS = r"""
+(imageValue, previousMetadata, loadedJsonPath, outputImage, bboxOrder, disableAutoUpdate) => {
+  let metadata = "";
+  try {
+    const root = document.querySelector("#jc-json-preview-image");
+    const input = root?.querySelector('input[type="file"]');
+    const file = input?.files?.[0];
+    if (file) {
+      metadata = JSON.stringify({
+        name: file.name,
+        size: file.size,
+        last_modified: file.lastModified,
+      });
+    }
+  } catch {
+    metadata = "";
+  }
+  const uploadStore = document.documentElement?.dataset || {};
+  if (!metadata) metadata = uploadStore.jcJsonUploadMetadata || "";
+  if (!imageValue) {
+    metadata = "";
+    uploadStore.jcJsonUploadMetadata = "";
+  }
+  return [imageValue, metadata, loadedJsonPath, outputImage, bboxOrder, disableAutoUpdate];
+}
+"""
+
+
+UPLOAD_METADATA_CAPTURE_JS = r"""
+const jcUploadStore = document.documentElement.dataset;
+if (jcUploadStore.jcJsonUploadMetadataCaptureBound !== "1") {
+  jcUploadStore.jcJsonUploadMetadataCaptureBound = "1";
+  jcUploadStore.jcJsonUploadMetadata = "";
+  document.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!target?.matches?.('#jc-json-preview-image input[type="file"]')) return;
+    const file = target.files?.[0];
+    if (!file) {
+      jcUploadStore.jcJsonUploadMetadata = "";
+      return;
+    }
+    jcUploadStore.jcJsonUploadMetadata = JSON.stringify({
+      name: file.name,
+      size: file.size,
+      last_modified: file.lastModified,
+    });
+  }, true);
+}
+"""
+
+
 def _ratio(aspect_ratio: str, width: float | int | None, height: float | int | None) -> str:
     if str(aspect_ratio) == "Custom":
         try:
@@ -192,18 +255,47 @@ def _aspect_controls_for_image(image_path: str | Path | None) -> tuple[Any, Any,
 
 
 def _outputs_image_choices() -> list[tuple[str, str]]:
+    choices: list[tuple[str, str]] = [(OUTPUT_NOT_SELECTED_LABEL, OUTPUT_NOT_SELECTED_VALUE)]
     if not OUTPUTS_DIR.exists():
-        return []
+        return choices
     images = [path for path in OUTPUTS_DIR.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
     images = sorted(images, key=natural_sort_key)
-    choices: list[tuple[str, str]] = []
     for path in images:
+        if path.stem.endswith("_boxed"):
+            continue
         try:
             label = str(path.relative_to(OUTPUTS_DIR))
         except Exception:
             label = path.name
         choices.append((label.replace("\\", "/"), str(path)))
     return choices
+
+
+def _output_dropdown_update(image_path: str | Path | None = None) -> Any:
+    choices = _outputs_image_choices()
+    if not image_path:
+        return gr.update(choices=choices, value=OUTPUT_NOT_SELECTED_VALUE)
+    path = Path(image_path)
+    if path.stem.endswith("_boxed") or not _is_relative_to(path, OUTPUTS_DIR):
+        return gr.update(choices=choices, value=OUTPUT_NOT_SELECTED_VALUE)
+    return gr.update(choices=choices, value=str(path))
+
+
+def _resolve_output_image_selection(selected_image: str | Path | None) -> Path | None:
+    if not selected_image:
+        return None
+    value = str(selected_image).strip()
+    if not value:
+        return None
+    path = Path(value)
+    if path.exists():
+        return path
+
+    normalized = value.replace("\\", "/").lstrip("/")
+    candidate = OUTPUTS_DIR / Path(normalized)
+    if _is_relative_to(candidate, OUTPUTS_DIR) and candidate.exists():
+        return candidate
+    return path
 
 
 def _row_data(rows: Any) -> list[list[Any]]:
@@ -425,10 +517,54 @@ def _preserve_visible(rows: Any, selected: Any, default_all: bool = False) -> tu
     return choices, values
 
 
+def _default_rows() -> list[list[Any]]:
+    return [DEFAULT_BUILDER_ROW.copy()]
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _is_gradio_temp_path(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    return _is_relative_to(Path(path), Path(tempfile.gettempdir()) / "gradio")
+
+
+def _same_file_bytes(left: str | Path | None, right: str | Path | None) -> bool:
+    if not left or not right:
+        return False
+    left_path = Path(left)
+    right_path = Path(right)
+    try:
+        if left_path.resolve() == right_path.resolve():
+            return True
+        left_stat = left_path.stat()
+        right_stat = right_path.stat()
+        if left_stat.st_size != right_stat.st_size:
+            return False
+        with left_path.open("rb") as left_handle, right_path.open("rb") as right_handle:
+            while True:
+                left_chunk = left_handle.read(1024 * 1024)
+                right_chunk = right_handle.read(1024 * 1024)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError:
+        return False
+
+
 def _sidecar_json_for_image(image_path: str | Path | None) -> Path | None:
     if not image_path:
         return None
     path = Path(image_path)
+    if _is_gradio_temp_path(path):
+        return None
     candidate = path.with_suffix(".json")
     if candidate.exists():
         return candidate
@@ -446,6 +582,8 @@ def _json_save_path_for_image(image_path: str | Path | None, loaded_json_path: s
     if not image_path:
         return None
     path = Path(image_path)
+    if _is_gradio_temp_path(path):
+        return None
     direct_sidecar = path.with_suffix(".json")
     if direct_sidecar.exists():
         return direct_sidecar
@@ -475,12 +613,317 @@ def _boxed_save_path_for_json(json_path: Path) -> Path:
     return json_path.with_name(f"{json_path.stem}_boxed.png")
 
 
-def _update_output_metadata_for_save(json_path: Path, caption_text: str, boxed_image_path: Path | None) -> str:
+def _relative_output_label(path: str | Path | None) -> str:
+    if not path:
+        return ""
+    path_value = Path(path)
+    try:
+        return str(path_value.relative_to(OUTPUTS_DIR)).replace("\\", "/")
+    except (OSError, ValueError):
+        return str(path_value)
+
+
+def _output_folder_label(path: str | Path | None) -> str:
+    if not path:
+        return ""
+    path_value = Path(path)
+    folder = path_value.parent
+    try:
+        return str(folder.relative_to(OUTPUTS_DIR)).replace("\\", "/")
+    except (OSError, ValueError):
+        return str(folder)
+
+
+def _loaded_output_label(image_path: str | Path | None, json_path: str | Path | None) -> str:
+    folder_label = _output_folder_label(json_path or image_path)
+    image_name = Path(image_path).name if image_path else ""
+    json_name = Path(json_path).name if json_path else ""
+    if folder_label and image_name and json_name:
+        return f"Folder: {folder_label} | Image: {image_name} | JSON: {json_name}"
+    if image_name:
+        return f"Image: {image_name}"
+    return ""
+
+
+def _loaded_output_label_for_json(json_path: str | Path | None) -> str:
+    if not json_path:
+        return ""
+    path = Path(json_path)
+    return _loaded_output_label(_image_for_json_path(path), path)
+
+
+def _boxed_preview_html(boxed_path: str | Path | None, json_path: str | Path | None = None) -> str:
+    if not boxed_path:
+        return ""
+    path = Path(boxed_path)
+    if not path.exists():
+        return ""
+    src = html.escape(_file_url(path), quote=True)
+    label = html.escape(path.name)
+    json_label = html.escape(_relative_output_label(json_path), quote=False) if json_path else ""
+    png_label = html.escape(_relative_output_label(path), quote=False)
+    source_line = f'<div class="jc-boxed-preview-source">JSON: {json_label}<br>PNG: {png_label}</div>' if json_label else f'<div class="jc-boxed-preview-source">PNG: {png_label}</div>'
+    return (
+        '<div class="jc-boxed-preview">'
+        '<div class="jc-boxed-preview-title">Rendered Boxed PNG</div>'
+        f"{source_line}"
+        f'<img src="{src}" alt="{label}" />'
+        "</div>"
+    )
+
+
+def _boxed_preview_for_json_path(json_path: str | Path | None) -> str:
+    if not json_path:
+        return ""
+    path = Path(json_path)
+    return _boxed_preview_html(_boxed_save_path_for_json(path), path)
+
+
+def _render_boxed_preview_from_json(json_path: str | Path | None, rows: Any, bbox_order: str) -> tuple[str, str]:
+    if not json_path:
+        return "", ""
+    path = Path(json_path)
+    source_path = _image_for_json_path(path)
+    if source_path is None:
+        return "", f"Boxed PNG was not rendered because no matching image exists for {path.name}."
+    try:
+        boxed_path = save_boxed_image(source_path, rows, _boxed_save_path_for_json(path), bbox_order=bbox_order)
+    except Exception as exc:
+        return "", f"Boxed PNG render failed: {type(exc).__name__}: {exc}"
+    if boxed_path is None:
+        return "", "Boxed PNG was not rendered because the matching JSON has no valid boxes."
+    return _boxed_preview_html(boxed_path, path), f"Boxed PNG rendered from matching JSON: {_relative_output_label(path)}."
+
+
+def _is_loaded_output_image_echo(selected_image: str | Path | None, loaded_json_path: str | Path | None) -> bool:
+    selected_value = str(selected_image or "").strip()
+    loaded_value = str(loaded_json_path or "").strip()
+    if not selected_value or not loaded_value:
+        return False
+    selected_path = Path(selected_value)
+    loaded_path = Path(loaded_value)
+    if selected_path.stem != loaded_path.stem:
+        return False
+    if not _is_relative_to(loaded_path, OUTPUTS_DIR):
+        return False
+    if _is_relative_to(selected_path, OUTPUTS_DIR):
+        return False
+    return _is_gradio_temp_path(selected_path)
+
+
+def _upload_metadata_payload(upload_metadata: Any) -> dict[str, Any]:
+    if isinstance(upload_metadata, dict):
+        payload = upload_metadata
+    elif isinstance(upload_metadata, str) and upload_metadata.strip():
+        try:
+            parsed = json.loads(upload_metadata)
+        except json.JSONDecodeError:
+            return {}
+        payload = parsed if isinstance(parsed, dict) else {}
+    else:
+        return {}
+    normalized = dict(payload)
+    if "lastModified" in normalized and "last_modified" not in normalized:
+        normalized["last_modified"] = normalized.get("lastModified")
+    return normalized
+
+
+def _coerce_upload_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _uploaded_output_path_from_metadata(selected_image: str | Path | None, upload_metadata: Any) -> Path | None:
+    selected_value = str(selected_image or "").strip()
+    if not selected_value:
+        return None
+    selected_path = Path(selected_value)
+    if not _is_gradio_temp_path(selected_path):
+        return None
+    metadata = _upload_metadata_payload(upload_metadata)
+    upload_name = str(metadata.get("name") or selected_path.name or "").strip()
+    if not upload_name:
+        return None
+    upload_size = _coerce_upload_number(metadata.get("size"))
+    upload_mtime_ms = _coerce_upload_number(metadata.get("last_modified"))
+    matches: dict[Path, Path] = {}
+    for candidate_image in OUTPUTS_DIR.rglob(upload_name):
+        if not candidate_image.is_file() or candidate_image.stem.endswith("_boxed"):
+            continue
+        if candidate_image.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        if not candidate_image.with_suffix(".json").exists():
+            continue
+        try:
+            candidate_stat = candidate_image.stat()
+        except OSError:
+            continue
+        if upload_size is not None and candidate_stat.st_size != int(upload_size):
+            continue
+        if not _same_file_bytes(selected_path, candidate_image):
+            continue
+        matches[candidate_image.resolve()] = candidate_image
+
+    if not matches:
+        return None
+
+    if upload_mtime_ms is not None:
+        timed_matches: list[tuple[float, Path]] = []
+        for candidate_image in matches.values():
+            try:
+                delta_ms = abs((candidate_image.stat().st_mtime * 1000) - upload_mtime_ms)
+            except OSError:
+                continue
+            if delta_ms <= 2500:
+                timed_matches.append((delta_ms, candidate_image))
+        if len(timed_matches) == 1:
+            return timed_matches[0][1]
+
+    if len(matches) == 1:
+        return next(iter(matches.values()))
+    return None
+
+
+def _gradio_temp_output_echo_path(
+    selected_image: str | Path | None,
+    loaded_json_path: str | Path | None,
+    selected_output_image: str | Path | None,
+    upload_metadata: Any = None,
+) -> Path | None:
+    selected_value = str(selected_image or "").strip()
+    if not selected_value:
+        return None
+    selected_path = Path(selected_value)
+    if not _is_gradio_temp_path(selected_path):
+        return None
+    loaded_value = str(loaded_json_path or "").strip()
+    if loaded_value:
+        loaded_path = Path(loaded_value)
+        if _is_relative_to(loaded_path, OUTPUTS_DIR):
+            loaded_image_path = _image_for_json_path(loaded_path)
+            if (
+                loaded_image_path is not None
+                and loaded_image_path.name == selected_path.name
+                and _same_file_bytes(selected_path, loaded_image_path)
+            ):
+                return loaded_image_path
+    output_path = _resolve_output_image_selection(selected_output_image)
+    if output_path is not None and output_path.name == selected_path.name and _same_file_bytes(selected_path, output_path):
+        return output_path
+    uploaded_output_path = _uploaded_output_path_from_metadata(selected_path, upload_metadata)
+    if uploaded_output_path is not None:
+        return uploaded_output_path
+    temp_sidecar = selected_path.with_suffix(".json")
+    matches: list[Path] = []
+    if temp_sidecar.exists():
+        try:
+            temp_json = temp_sidecar.read_text(encoding="utf-8")
+        except OSError:
+            temp_json = ""
+        if temp_json:
+            for candidate_json in OUTPUTS_DIR.rglob(f"{selected_path.stem}.json"):
+                if not candidate_json.is_file():
+                    continue
+                try:
+                    if candidate_json.read_text(encoding="utf-8") != temp_json:
+                        continue
+                except OSError:
+                    continue
+                candidate_image = _image_for_json_path(candidate_json)
+                if (
+                    candidate_image is not None
+                    and candidate_image.name == selected_path.name
+                    and _same_file_bytes(selected_path, candidate_image)
+                ):
+                    matches.append(candidate_image)
+            unique_json_matches = {path.resolve(): path for path in matches}
+            if len(unique_json_matches) == 1:
+                return next(iter(unique_json_matches.values()))
+
+    matches = []
+    for candidate_image in OUTPUTS_DIR.rglob(selected_path.name):
+        if not candidate_image.is_file() or candidate_image.stem.endswith("_boxed"):
+            continue
+        if candidate_image.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        if candidate_image.with_suffix(".json").exists() and _same_file_bytes(selected_path, candidate_image):
+            matches.append(candidate_image)
+    unique_matches = {path.resolve(): path for path in matches}
+    if len(unique_matches) == 1:
+        return next(iter(unique_matches.values()))
+    return None
+
+
+def _image_for_json_path(json_path: Path) -> Path | None:
+    for extension in sorted(IMAGE_EXTENSIONS):
+        candidate = json_path.with_suffix(extension)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _builder_image_filename(image_path: Path) -> str:
+    suffix = image_path.suffix.lower()
+    if suffix not in IMAGE_EXTENSIONS:
+        return "image.png"
+    return image_path.name or f"image{suffix}"
+
+
+def _builder_save_paths(
+    image_path: str | Path | None,
+    loaded_json_path: str | Path | None = None,
+) -> tuple[Path, Path | None, Path | None]:
+    loaded_value = str(loaded_json_path or "").strip()
+    if loaded_value:
+        json_path = Path(loaded_value)
+        return json_path, _image_for_json_path(json_path), None
+
+    if image_path:
+        path = Path(image_path)
+        if _is_relative_to(path, OUTPUTS_DIR):
+            json_path = _json_save_path_for_image(path)
+            if json_path is not None:
+                return json_path, path if path.exists() else _image_for_json_path(json_path), None
+
+        sidecar = _sidecar_json_for_image(path)
+        if sidecar is not None:
+            return sidecar, path if path.exists() else _image_for_json_path(sidecar), None
+
+        run_dir = next_numbered_output_dir(OUTPUTS_DIR)
+        output_image_path: Path | None = None
+        if path.exists():
+            output_image_path = run_dir / _builder_image_filename(path)
+            copy_image_if_needed(path, output_image_path, True)
+        json_path = output_image_path.with_suffix(".json") if output_image_path is not None else run_dir / "image.json"
+        return json_path, output_image_path, output_image_path
+
+    run_dir = next_numbered_output_dir(OUTPUTS_DIR)
+    return run_dir / "image.json", None, None
+
+
+def _update_output_metadata_for_save(
+    json_path: Path,
+    caption_text: str,
+    boxed_image_path: Path | None,
+    output_image_path: Path | None,
+) -> str:
     metadata_path = json_path.parent / "metadata.json"
-    if not metadata_path.exists():
+    if not metadata_path.exists() and not _is_relative_to(json_path, OUTPUTS_DIR):
         return ""
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        else:
+            metadata = {
+                "generation_type": "json_prompt_builder",
+                "engine": "json_prompt_builder",
+                "source_image_path": str(output_image_path) if output_image_path else None,
+            }
         if not isinstance(metadata, dict):
             return "Metadata was not updated because metadata.json is not an object."
         metadata.update(
@@ -492,9 +935,11 @@ def _update_output_metadata_for_save(json_path: Path, caption_text: str, boxed_i
                 "output_run_dir": str(json_path.parent),
             }
         )
+        if output_image_path is not None:
+            metadata["output_image_path"] = str(output_image_path)
         if boxed_image_path is not None:
             metadata["boxed_image_path"] = str(boxed_image_path)
-        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        write_generation_metadata(metadata_path, metadata)
     except Exception as exc:
         return f"Metadata update skipped: {type(exc).__name__}: {exc}"
     return ""
@@ -506,26 +951,27 @@ def _save_json_builder_edits(
     caption_text: str,
     rows: Any,
     bbox_order: str,
-) -> str:
-    json_path = _json_save_path_for_image(image_path, loaded_json_path)
-    if json_path is None:
-        return html_message("info", "JSON box edits applied. Save skipped because no preview image is loaded.")
+) -> tuple[str, str]:
     try:
         json.loads(caption_text)
     except Exception as exc:
-        return html_message(
-            "error",
-            "JSON box edits applied in the UI, but save was blocked because the edited JSON does not parse: "
-            + html.escape(f"{type(exc).__name__}: {exc}"),
+        return (
+            html_message(
+                "error",
+                "JSON box edits applied in the UI, but save was blocked because the edited JSON does not parse: "
+                + html.escape(f"{type(exc).__name__}: {exc}"),
+            ),
+            str(loaded_json_path or ""),
         )
 
     boxed_note = ""
     metadata_note = ""
     boxed_image_path: Path | None = None
     try:
+        json_path, output_image_path, copied_image_path = _builder_save_paths(image_path, loaded_json_path)
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(caption_text, encoding="utf-8")
-        source_path = _boxed_source_for_image(image_path)
+        source_path = output_image_path if output_image_path and output_image_path.exists() else _boxed_source_for_image(image_path)
         if source_path is None:
             boxed_note = "Boxed PNG was not updated because the source image path is unavailable."
         else:
@@ -534,11 +980,19 @@ def _save_json_builder_edits(
                 boxed_note = "Boxed PNG was not updated because there are no valid boxes to render."
             else:
                 boxed_note = f"Boxed PNG saved to {boxed_image_path}."
-        metadata_note = _update_output_metadata_for_save(json_path, caption_text, boxed_image_path)
+        metadata_note = _update_output_metadata_for_save(
+            json_path,
+            caption_text,
+            boxed_image_path,
+            copied_image_path or output_image_path,
+        )
     except Exception as exc:
-        return html_message(
-            "error",
-            "JSON box edits applied in the UI, but save failed: " + html.escape(f"{type(exc).__name__}: {exc}"),
+        return (
+            html_message(
+                "error",
+                "JSON box edits applied in the UI, but save failed: " + html.escape(f"{type(exc).__name__}: {exc}"),
+            ),
+            str(loaded_json_path or ""),
         )
 
     message = "JSON box edits applied and saved to " + html.escape(str(json_path)) + "."
@@ -546,7 +1000,7 @@ def _save_json_builder_edits(
         message += "<br>" + html.escape(boxed_note)
     if metadata_note:
         message += "<br>" + html.escape(metadata_note)
-    return html_message("success", message)
+    return html_message("success", message), str(json_path)
 
 
 def _fields_from_json(parsed: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str, str]:
@@ -588,15 +1042,30 @@ def build_tab() -> TabUI:
         interactive=True,
     )
     loaded_json_path = gr.State("")
+    upload_metadata = gr.Textbox(
+        value="",
+        label="Upload Metadata",
+        elem_id="jc-json-upload-metadata",
+        elem_classes=["jc-hidden-sync"],
+        interactive=True,
+    )
 
     with gr.Row(equal_height=False):
         with gr.Column(scale=4, elem_classes=["jc-compact"]):
-            image = gr.Image(type="filepath", label="Optional Preview Image", height=390)
+            gr.HTML('<span data-jc-upload-metadata-capture="1"></span>', elem_classes=["jc-hidden-sync"])
+            image = gr.Image(type="filepath", label="Optional Preview Image", height=390, elem_id="jc-json-preview-image")
             with gr.Accordion("Load / Continue From Outputs", open=True):
                 output_image = gr.Dropdown(
                     choices=_outputs_image_choices(),
+                    value=OUTPUT_NOT_SELECTED_VALUE,
                     label="Output Image",
                     allow_custom_value=False,
+                )
+                loaded_output_label = gr.Textbox(
+                    label="Loaded Output",
+                    value="",
+                    interactive=False,
+                    elem_classes=["jc-loaded-output"],
                 )
                 with gr.Row():
                     refresh_outputs_btn = gr.Button("Refresh", elem_classes=["btn-refresh"])
@@ -610,6 +1079,7 @@ def build_tab() -> TabUI:
                 canvas_width = gr.Number(label="Width", value=1000, precision=0)
                 canvas_height = gr.Number(label="Height", value=1000, precision=0)
             overlay = gr.HTML("", elem_classes=["jc-qwen-overlay"], js_on_load=OVERLAY_EDIT_JS)
+            boxed_preview = gr.HTML("", elem_classes=["jc-json-boxed-preview"])
 
         with gr.Column(scale=10, elem_classes=["jc-compact"]):
             high_level = gr.Textbox(label="High Level Description", lines=4)
@@ -760,6 +1230,7 @@ def build_tab() -> TabUI:
             gr.update(choices=choices, value=visible),
             preview,
             "",
+            "",
         )
 
     def preview_boxes(image_path, ratio_value, width_value, height_value, all_rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
@@ -806,7 +1277,13 @@ def build_tab() -> TabUI:
         final, parsed, warnings = apply_rows_to_json(source_json, merged_rows, bbox_order=bbox_order_value)
         display_rows = _row_data(merged_rows)
         choices, visible = _preserve_visible(display_rows, visible_choices, default_all=True)
-        save_status = _save_json_builder_edits(image_path, loaded_json_path_value, final, display_rows, bbox_order_value)
+        save_status, next_loaded_json_path = _save_json_builder_edits(
+            image_path,
+            loaded_json_path_value,
+            final,
+            display_rows,
+            bbox_order_value,
+        )
         status_html = save_status
         if warnings:
             status_html = (
@@ -821,6 +1298,9 @@ def build_tab() -> TabUI:
             _table_editor_html(display_rows, visible, bbox_order_value),
             gr.update(choices=choices, value=visible),
             _overlay(image_path, ratio_value, width_value, height_value, display_rows, bbox_order_value, visible, disable_auto_update_value),
+            _boxed_preview_for_json_path(next_loaded_json_path),
+            next_loaded_json_path,
+            _loaded_output_label_for_json(next_loaded_json_path),
             status_html,
         )
 
@@ -883,37 +1363,48 @@ def build_tab() -> TabUI:
             pretty,
             *fields,
             _overlay(image_path, ratio_value, width_value, height_value, rows, bbox_order_value, visible, disable_auto_update_value),
+            "",
             status_html,
+        )
+
+    def fresh_empty_output_state(bbox_order_value, message):
+        rows = _default_rows()
+        choices, visible = _preserve_visible(rows, [], default_all=True)
+        return (
+            None,
+            _output_dropdown_update(),
+            "",
+            "",
+            gr.update(value="1:1"),
+            gr.update(value=1000),
+            gr.update(value=1000),
+            "",
+            rows,
+            _rows_snapshot_value(rows),
+            _preview_rows_snapshot_value(rows),
+            _table_editor_html(rows, visible, bbox_order_value),
+            gr.update(choices=choices, value=visible),
+            "",
+            "Photograph",
+            "",
+            "",
+            "",
+            "illustration",
+            "",
+            "",
+            "",
+            "",
+            "",
+            message,
         )
 
     def load_output_choice(selected_image, bbox_order_value, disable_auto_update_value):
         bbox_order_value = clean_bbox_order(bbox_order_value)
         if not selected_image:
-            return (
-                gr.update(),
-                "",
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                "",
-                [],
-                _rows_snapshot_value([]),
-                _preview_rows_snapshot_value([]),
-                _table_editor_html([], [], bbox_order_value),
-                gr.update(choices=[], value=[]),
-                "",
-                "Photograph",
-                "",
-                "",
-                "",
-                "illustration",
-                "",
-                "",
-                "",
-                gr.update(),
-                html_message("error", "Select an output image first."),
-            )
-        image_path = Path(selected_image)
+            return fresh_empty_output_state(bbox_order_value, html_message("info", "No output selected."))
+        image_path = _resolve_output_image_selection(selected_image)
+        if image_path is None:
+            return fresh_empty_output_state(bbox_order_value, html_message("info", "No output selected."))
         ratio_update, width_update, height_update = _aspect_controls_for_image(image_path)
         ratio_value = getattr(ratio_update, "get", lambda _key, _default=None: _default)("value", None) if isinstance(ratio_update, dict) else None
         width_value = getattr(width_update, "get", lambda _key, _default=None: _default)("value", None) if isinstance(width_update, dict) else None
@@ -926,7 +1417,9 @@ def build_tab() -> TabUI:
             empty_overlay = _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, [], bbox_order_value, [], disable_auto_update_value)
             return (
                 str(image_path),
+                _output_dropdown_update(image_path),
                 str(_json_save_path_for_image(image_path) or ""),
+                _loaded_output_label(image_path, _json_save_path_for_image(image_path)),
                 ratio_update,
                 width_update,
                 height_update,
@@ -946,6 +1439,7 @@ def build_tab() -> TabUI:
                 "",
                 "",
                 empty_overlay,
+                "",
                 html_message("info", f"Loaded image, but no same-name JSON was found: {image_path.with_suffix('.json')}"),
             )
         text = sidecar.read_text(encoding="utf-8")
@@ -954,7 +1448,9 @@ def build_tab() -> TabUI:
             empty_overlay = _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, [], bbox_order_value, [], disable_auto_update_value)
             return (
                 str(image_path),
+                _output_dropdown_update(image_path),
                 str(sidecar),
+                _loaded_output_label(image_path, sidecar),
                 ratio_update,
                 width_update,
                 height_update,
@@ -974,15 +1470,26 @@ def build_tab() -> TabUI:
                 "",
                 "",
                 empty_overlay,
+                "",
                 html_message("error", "Loaded image, but same-name JSON could not be parsed.<br><pre>" + "\n".join(warnings) + "</pre>"),
             )
         rows = json_to_element_rows(parsed, bbox_order=bbox_order_value)
         choices, visible = _preserve_visible(rows, [], default_all=True)
         fields = _fields_from_json(parsed)
-        status_html = html_message("success", f"Loaded {image_path.name} and {sidecar.name}.")
+        boxed_html, boxed_note = _render_boxed_preview_from_json(sidecar, rows, bbox_order_value)
+        status_message = (
+            "Loaded output "
+            + html.escape(_loaded_output_label(image_path, sidecar))
+            + "."
+        )
+        if boxed_note:
+            status_message += "<br>" + html.escape(boxed_note)
+        status_html = html_message("success", status_message)
         return (
             str(image_path),
+            _output_dropdown_update(image_path),
             str(sidecar),
+            _loaded_output_label(image_path, sidecar),
             ratio_update,
             width_update,
             height_update,
@@ -994,15 +1501,89 @@ def build_tab() -> TabUI:
             gr.update(choices=choices, value=visible),
             *fields,
             _overlay(image_path, ratio_for_overlay, width_for_overlay, height_for_overlay, rows, bbox_order_value, visible, disable_auto_update_value),
+            boxed_html,
             status_html,
         )
 
-    def load_preview_image_choice(selected_image, current_loaded_json_path, bbox_order_value, disable_auto_update_value):
+    def fresh_preview_state(selected_image, bbox_order_value, disable_auto_update_value, message):
+        rows = _default_rows()
+        choices, visible = _preserve_visible(rows, [], default_all=True)
+        if selected_image:
+            ratio_update, width_update, height_update = _aspect_controls_for_image(selected_image)
+            ratio_value = ratio_update.get("value", "1:1") if isinstance(ratio_update, dict) else "1:1"
+            width_value = width_update.get("value", 1000) if isinstance(width_update, dict) else 1000
+            height_value = height_update.get("value", 1000) if isinstance(height_update, dict) else 1000
+            overlay_value = _overlay(
+                selected_image,
+                ratio_value,
+                width_value,
+                height_value,
+                rows,
+                bbox_order_value,
+                visible,
+                disable_auto_update_value,
+            )
+        else:
+            ratio_update = gr.update(value="1:1")
+            width_update = gr.update(value=1000)
+            height_update = gr.update(value=1000)
+            overlay_value = ""
+        return (
+            _output_dropdown_update(selected_image),
+            "",
+            f"Unsaved preview image: {Path(selected_image).name}" if selected_image else "",
+            ratio_update,
+            width_update,
+            height_update,
+            "",
+            rows,
+            _rows_snapshot_value(rows),
+            _preview_rows_snapshot_value(rows),
+            _table_editor_html(rows, visible, bbox_order_value),
+            gr.update(choices=choices, value=visible),
+            "",
+            "Photograph",
+            "",
+            "",
+            "",
+            "illustration",
+            "",
+            "",
+            "",
+            overlay_value,
+            "",
+            message,
+        )
+
+    def load_preview_image_choice(selected_image, upload_metadata_value, current_loaded_json_path, current_output_image, bbox_order_value, disable_auto_update_value):
+        bbox_order_value = clean_bbox_order(bbox_order_value)
+        if not selected_image:
+            return fresh_preview_state(
+                None,
+                bbox_order_value,
+                disable_auto_update_value,
+                html_message("info", "Preview image cleared."),
+            )
         sidecar = _sidecar_json_for_image(selected_image)
-        image_text = str(selected_image or "").replace("\\", "/").lower()
-        is_gradio_temp = "/temp/gradio/" in image_text or "/appdata/local/temp/gradio/" in image_text
-        if sidecar is None and (current_loaded_json_path or is_gradio_temp):
+        loaded_json_value = str(current_loaded_json_path or "").strip()
+        echo_output_path = _gradio_temp_output_echo_path(selected_image, loaded_json_value, current_output_image, upload_metadata_value)
+        if echo_output_path is not None:
+            return load_output_choice(echo_output_path, bbox_order_value, disable_auto_update_value)[1:]
+        if _is_loaded_output_image_echo(selected_image, loaded_json_value):
             return tuple(gr.update() for _component in load_outputs[1:])
+        if sidecar is None and loaded_json_value and _is_relative_to(Path(loaded_json_value), OUTPUTS_DIR):
+            selected_text = str(selected_image or "")
+            loaded_stem = Path(loaded_json_value).stem
+            selected_stem = Path(selected_text).stem
+            if loaded_stem and (selected_stem == loaded_stem or loaded_stem in selected_text):
+                return tuple(gr.update() for _component in load_outputs[1:])
+        if sidecar is None:
+            return fresh_preview_state(
+                selected_image,
+                bbox_order_value,
+                disable_auto_update_value,
+                html_message("info", "Loaded preview image. Apply Box Edits & Save will create a new output folder."),
+            )
         return load_output_choice(selected_image, bbox_order_value, disable_auto_update_value)[1:]
 
     def update_box_visibility(image_path, ratio_value, width_value, height_value, rows, snapshot_value, bbox_order_value, visible_choices, disable_auto_update_value):
@@ -1110,7 +1691,7 @@ def build_tab() -> TabUI:
     generate_btn.click(
         generate_json,
         inputs=generate_inputs,
-        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, status],
+        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, boxed_preview, status],
     )
     preview_btn.click(
         preview_boxes,
@@ -1134,7 +1715,19 @@ def build_tab() -> TabUI:
             box_visibility,
             disable_auto_update,
         ],
-        outputs=[json_output, all_element_rows, rows_snapshot, preview_rows_snapshot, element_rows, box_visibility, overlay, status],
+        outputs=[
+            json_output,
+            all_element_rows,
+            rows_snapshot,
+            preview_rows_snapshot,
+            element_rows,
+            box_visibility,
+            overlay,
+            boxed_preview,
+            loaded_json_path,
+            loaded_output_label,
+            status,
+        ],
     )
     add_row_btn.click(
         add_row,
@@ -1168,6 +1761,7 @@ def build_tab() -> TabUI:
             color_palette,
             background,
             overlay,
+            boxed_preview,
             status,
         ],
         queue=False,
@@ -1229,7 +1823,9 @@ def build_tab() -> TabUI:
     refresh_outputs_btn.click(refresh_output_choices, outputs=output_image, queue=False)
     load_outputs = [
         image,
+        output_image,
         loaded_json_path,
+        loaded_output_label,
         aspect_ratio,
         canvas_width,
         canvas_height,
@@ -1249,10 +1845,17 @@ def build_tab() -> TabUI:
         color_palette,
         background,
         overlay,
+        boxed_preview,
         status,
     ]
     output_image.change(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
     load_output_btn.click(load_output_choice, inputs=[output_image, bbox_order, disable_auto_update], outputs=load_outputs, queue=False)
-    image.change(load_preview_image_choice, inputs=[image, loaded_json_path, bbox_order, disable_auto_update], outputs=load_outputs[1:], queue=False)
+    image.change(
+        load_preview_image_choice,
+        inputs=[image, upload_metadata, loaded_json_path, output_image, bbox_order, disable_auto_update],
+        outputs=load_outputs[1:],
+        queue=False,
+        js=UPLOAD_METADATA_JS,
+    )
 
     return TabUI(key="json_builder", order=[], defaults={}, inputs=[])

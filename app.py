@@ -356,6 +356,7 @@ def main() -> None:
         "allowed_paths": allowed_paths,
         "favicon_path": FAVICON_PATH if FAVICON_PATH.exists() else None,
         "css": CUSTOM_CSS,
+        "js": json_builder.UPLOAD_METADATA_CAPTURE_JS,
         "quiet": True,
     }
     if args.server_name:

@@ -546,6 +546,52 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   object-fit: contain;
 }
 
+.jc-json-boxed-preview:has(.jc-boxed-preview:empty),
+.jc-json-boxed-preview .html-container:empty,
+.jc-json-boxed-preview .prose:empty {
+  display: none !important;
+}
+
+.jc-boxed-preview {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.jc-boxed-preview-title {
+  margin-bottom: 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.jc-loaded-output textarea,
+.jc-loaded-output input {
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 12px !important;
+}
+
+.jc-boxed-preview-source {
+  margin-bottom: 8px;
+  color: #94a3b8;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.jc-boxed-preview img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 520px;
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
 .jc-overlay-blank {
   width: min(100%, 960px);
   min-height: 320px;

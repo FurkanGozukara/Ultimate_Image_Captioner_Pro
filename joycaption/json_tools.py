@@ -618,8 +618,14 @@ def apply_rows_to_json(json_text: str, rows: Any, bbox_order: str = "yxyx") -> t
 
 
 def _file_url(path: str | Path) -> str:
-    normalized = str(Path(path)).replace("\\", "/")
-    return "/gradio_api/file=" + quote(normalized, safe="/:")
+    path_value = Path(path)
+    normalized = str(path_value).replace("\\", "/")
+    url = "/gradio_api/file=" + quote(normalized, safe="/:")
+    try:
+        stat = path_value.stat()
+    except OSError:
+        return url
+    return f"{url}?v={stat.st_mtime_ns}-{stat.st_size}"
 
 
 def _label_for_element(index: int, element: dict[str, Any]) -> str:
