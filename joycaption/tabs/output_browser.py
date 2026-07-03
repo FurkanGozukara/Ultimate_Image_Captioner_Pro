@@ -26,11 +26,25 @@ def _day_for_folder(folder: Path) -> str:
         return ""
 
 
+def _mtime_for(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
 def _time_for(path: Path) -> str:
     try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        mtime = _mtime_for(path)
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)) if mtime else ""
     except Exception:
         return ""
+
+
+def _folder_display_sort_key(path: Path) -> tuple[Any, ...]:
+    if path.name.isdigit():
+        return (1, int(path.name), natural_sort_key(path))
+    return (0, _mtime_for(path), natural_sort_key(path))
 
 
 def _find_image_for_caption(caption_path: Path) -> Path | None:
@@ -49,7 +63,11 @@ def _scan_folder_index() -> list[dict[str, Any]]:
     ensure_runtime_dirs()
     if not OUTPUTS_DIR.exists():
         return []
-    folders = sorted([path for path in OUTPUTS_DIR.iterdir() if path.is_dir()], key=natural_sort_key, reverse=True)
+    folders = sorted(
+        [path for path in OUTPUTS_DIR.iterdir() if path.is_dir()],
+        key=_folder_display_sort_key,
+        reverse=True,
+    )
     return [
         {
             "day": _day_for_folder(folder),
@@ -114,6 +132,7 @@ def _scan_records_for_folders(folders: list[Path], search: str = "") -> list[dic
                 if path.is_file() and path.suffix.lower() in {".txt", ".json"} and path.name.lower() != "metadata.json"
             ],
             key=natural_sort_key,
+            reverse=True,
         )
         for caption_path in captions:
             image_path = _find_image_for_caption(caption_path)
@@ -267,7 +286,7 @@ def _load_caption(caption_path: str | None) -> tuple[str | None, str, str, str, 
     )
 
 
-def build_tab() -> TabUI:
+def build_tab(saved_outputs_tab=None) -> TabUI:
     initial_folders = _scan_folder_index()
     initial_records, initial_table, _initial_dropdown, _initial_page, initial_page_text, initial_status = _page_payload(
         initial_folders,
@@ -432,6 +451,13 @@ def build_tab() -> TabUI:
         outputs=[folders_state, filtered_state, day_filter, page_number, table, selected_dropdown, page_info, status],
         queue=False,
     )
+    if saved_outputs_tab is not None:
+        saved_outputs_tab.select(
+            refresh,
+            inputs=[day_filter, search_box, page_size],
+            outputs=[folders_state, filtered_state, day_filter, page_number, table, selected_dropdown, page_info, status],
+            queue=False,
+        )
     day_filter.change(
         first_page,
         inputs=[folders_state, day_filter, search_box, page_size],

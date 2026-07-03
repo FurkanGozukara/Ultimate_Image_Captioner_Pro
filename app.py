@@ -210,8 +210,8 @@ def build_app() -> gr.Blocks:
                     tabs.append(pre_alpha.build_tab(pre_engine))
                 with gr.Tab("JSON Prompt Builder", render_children=True):
                     tabs.append(json_builder.build_tab())
-                with gr.Tab("Saved Outputs", render_children=True):
-                    tabs.append(output_browser.build_tab())
+                with gr.Tab("Saved Outputs", render_children=True) as saved_outputs_tab:
+                    tabs.append(output_browser.build_tab(saved_outputs_tab))
 
             flat_inputs: list[gr.components.Component] = []
             for tab in tabs:
