@@ -53,22 +53,22 @@
 -   For Torch Compile to work, you need to have installed Visual Studio Community Edition with All c++ options        
     -   C++ tools not needed anymore, only Visual Studio Community Edition            
     -   Requirements post is updated for this : [https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210](https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210)
--   
-    <img height="600" alt="image" src="https://github.com/user-attachments/assets/411cd83a-efa7-4704-84ad-599cb23d3be3" />
--   
-    <img height="600"  alt="image" src="https://github.com/user-attachments/assets/74fb1723-ca51-46df-8bd6-8348571a1c42" />
--   
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/411cd83a-efa7-4704-84ad-599cb23d3be3" />
+
+<img height="600"  alt="image" src="https://github.com/user-attachments/assets/74fb1723-ca51-46df-8bd6-8348571a1c42" />
+
 -   New Qwen Image models implemented that fully works        
 -   They will be downloaded fully automatically when you first time use them, only default Qwen3-VL 8B Instruct is auto downloaded with the initial installation        
--   
-    <img height="600" alt="image" src="https://github.com/user-attachments/assets/13f854a9-9fef-4560-adc0-6d17e87d9096" />
--   
+
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/13f854a9-9fef-4560-adc0-6d17e87d9096" />
+
 -   Joy Caption Alpha 2, Joy Caption Alpha 1, Joy Caption Pre Alpha models will not be auto downloaded anymore with initial installation        
 -   They will be auto downloaded when you first time use them        
 -   All Joy Caption outputs are now displayed with text-wrapping and has copy generated prompt button feature
--   
-    <img width="1657" height="658" alt="image" src="https://github.com/user-attachments/assets/67d6b7e6-f984-4192-8e3f-781bcb16d788" />
--   
+
+<img width="1657" height="658" alt="image" src="https://github.com/user-attachments/assets/67d6b7e6-f984-4192-8e3f-781bcb16d788" />
+
 
 ## 16 July 2026 V1.3
 
