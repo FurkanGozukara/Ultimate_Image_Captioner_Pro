@@ -122,7 +122,13 @@ def build_tab(engine: Any) -> TabUI:
                         single_btn = gr.Button("Caption Image", elem_classes=["btn-beta-caption"])
                         single_cancel_btn = gr.Button("Cancel", elem_classes=["btn-cancel"])
                         single_open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"])
-                    output_caption = gr.Textbox(label="Generated Caption", lines=9, interactive=True, elem_classes=["jc-output"])
+                    output_caption = gr.Textbox(
+                        label="Generated Caption",
+                        lines=9,
+                        interactive=True,
+                        buttons=["copy"],
+                        elem_classes=["jc-output", "jc-caption-output"],
+                    )
 
         with gr.Tab("Files to ZIP", render_children=True):
             batch_status = gr.HTML("")

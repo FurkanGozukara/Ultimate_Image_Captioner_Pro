@@ -97,7 +97,12 @@ def build_tab(engine: Any) -> TabUI:
                 caption_btn = gr.Button("Caption Image", elem_classes=["btn-alpha1-caption"])
                 cancel_single_btn = gr.Button("Cancel", elem_classes=["btn-cancel"])
                 open_outputs_btn = gr.Button("Open Outputs", elem_classes=["btn-open-folder"])
-            output_caption = gr.Textbox(label="Caption", lines=8, elem_classes=["jc-output"])
+            output_caption = gr.Textbox(
+                label="Caption",
+                lines=8,
+                buttons=["copy"],
+                elem_classes=["jc-output", "jc-caption-output"],
+            )
 
         with gr.Column(scale=4, elem_classes=["jc-compact"]):
             with gr.Accordion("Caption Prompt", open=True):

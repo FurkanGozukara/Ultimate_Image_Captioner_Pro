@@ -162,6 +162,12 @@ button.btn-cancel { background: #dc2626 !important; color: #ffffff !important; b
   white-space: pre !important;
 }
 
+.jc-caption-output textarea {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
 .jc-replace-pairs .block,
 .jc-replace-pairs .html-container,
 .jc-replace-pairs .prose {
