@@ -1,26 +1,74 @@
 # Made for SECourses Premium Members : https://www.patreon.com/posts/162527725
 ## Download Link : https://www.patreon.com/posts/162527725
 
-- With Ideogram 4 model as you know JSON prompting is now a thing and we need JSON prompts for both inference and training    
-- Therefore, a new app was necessary to solve this issue and I built the very best local app out there for this task    
-- Full features of the app introduced below with screenshots so please read
-   - The installer will auto download all the necessary models with 16 connections + SHA256 hash verification
-- Hopefully a tutorial video coming as well    
-- SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added    
-   - SwarmUI : [https://www.patreon.com/SECourses/posts/114517862](https://www.patreon.com/SECourses/posts/114517862)        
-   - ComfyUI : [https://www.patreon.com/SECourses/posts/105023709](https://www.patreon.com/SECourses/posts/105023709)
-        
-- **Windows Requirements**    
-   - Python 3.11.x, FFmpeg, CUDA 13, cuDNN 9.17 or above, C++ tools, MSVC and Git        
-      - Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver            
-      - Follow this requirements tutorial video exactly : [https://youtu.be/DrhUHnYfwC0](https://youtu.be/DrhUHnYfwC0)            
-      - Follow its updated post with links and screenshots exactly : [https://www.patreon.com/SECourses/posts/111553210](https://www.patreon.com/SECourses/posts/111553210)
+-   With Ideogram 4 model as you know JSON prompting is now a thing and we need JSON prompts for both inference and training    
+-   Therefore, a new app was necessary to solve this issue and I built the very best local app out there for this task    
+-   Fully supported model list is as below with fully working robust Torch Compile    
+    -   Qwen Vision Models        
+        -   Qwen3-VL 8B Instruct (default)            
+        -   Huihui Qwen3-VL 8B Instruct Abliterated            
+        -   Qwen3-VL 4B Instruct            
+        -   Qwen3-VL 2B Instruct            
+        -   Qwen3-VL 30B-A3B Instruct            
+        -   Qwen3.6 27B            
+        -   Huihui Qwen3.6 27B Abliterated
             
-- **For RunPod, SimplePod, Massed Compute and Linux please follow:**    
-   - Massed\_Compute\_Instructions\_READ.txt        
-   -  Runpod\_SimplePod\_Ultimate\_Caption\_Instructions.txt        
-- **The application runs on Torch 2.13 with CUDA 13, supports consumer and server NVIDIA GPUs**
-   - The current installer also uses Gradio 6.20, Triton 3.7.x, and the latest compatible Transformers stack.
+    -   Joy Caption Models        
+        -   Joy Caption Beta 1            
+        -   Joy Caption Alpha 2            
+        -   Joy Caption Alpha 1            
+        -   Joy Caption Pre Alpha
+            
+-   Full features of the app introduced below with screenshots so please read    
+    -   The installer will auto download all the necessary models with 16 connections + SHA256 hash verification        
+-   Full tutorial video : [https://youtu.be/TW3MRdd0MV4](https://youtu.be/TW3MRdd0MV4)
+    
+-   SwarmUI and ComfyUI zip files updated for Ideogram 4 model, model downloads and presets and workflows already added    
+    -   SwarmUI : [https://www.patreon.com/SECourses/posts/114517862](https://www.patreon.com/SECourses/posts/114517862)        
+    -   ComfyUI : [https://www.patreon.com/SECourses/posts/105023709](https://www.patreon.com/SECourses/posts/105023709)
+        
+-   Windows Requirements    
+    -   Python 3.12.10, FFmpeg, CUDA 13, cuDNN 9.17 or above, Visual Studio Community Edition with all C++ options selected        
+        -   Don't worry CUDA 13 works with all GPUs - make sure you have updated NVIDIA driver            
+        -   Follow this requirements tutorial video exactly : [https://youtu.be/DrhUHnYfwC0](https://youtu.be/DrhUHnYfwC0)            
+        -   Follow its updated post with links and screenshots exactly : [https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210](https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210)
+            
+-   For RunPod, SimplePod, Massed Compute and Linux please follow:    
+    -   Massed\_Compute\_Instructions\_READ.txt        
+    -   Runpod\_SimplePod\_Ultimate\_Caption\_Instructions.txt
+        
+-   The application runs on Torch 2.13 with CUDA 13, supports literally every GPU out there including server GPUs    
+    -   Moreover, we are using latest libraries that I compiled as below
+        
+<img height="600" alt="image" src="https://github.com/user-attachments/assets/1e925190-b7dd-4555-bdda-a83511624cf0" />
+
+## 16 July 2026 V2.1
+
+-   -   Application upgraded to newest Torch 2.13 with above seen pre-compiled wheels that works perfect        
+        -   So either do a fresh install or, extract latest zip file, overwrite installers, delete venv folder inside Ultimate\_Image\_Captioner\_Pro and run installer again for update            
+        -   The following models are fully supported now            
+            -   Qwen3-VL 8B Instruct (default), Huihui Qwen3-VL 8B Instruct Abliterated, Qwen3-VL 4B Instruct, Qwen3-VL 2B Instruct, Qwen3-VL 30B-A3B Instruct, Qwen3.6 27B, Huihui Qwen3.6 27B Abliterated                
+    -   We have implemented fully working torch compile feature that speeds up Qwen Vision Models 84% and works on all Joy Captions as well        
+    -   Moreover, now we are using Python 3.12.10 so please install Python 3.12.10 if you don't have yet        
+    -   For Torch Compile to work, you need to have installed Visual Studio Community Edition with All c++ options        
+        -   C++ tools not needed anymore, only Visual Studio Community Edition            
+        -   Requirements post is updated for this : [https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210](https://www.patreon.com/SECourses/posts/requirements-written-tutorial-111553210)
+
+    <img height="600" alt="image" src="https://github.com/user-attachments/assets/411cd83a-efa7-4704-84ad-599cb23d3be3" />
+    
+    <img height="600"  alt="image" src="https://github.com/user-attachments/assets/74fb1723-ca51-46df-8bd6-8348571a1c42" />
+    
+    -   New Qwen Image models implemented that fully works        
+    -   They will be downloaded fully automatically when you first time use them, only default Qwen3-VL 8B Instruct is auto downloaded with the initial installation        
+    
+    <img height="600" alt="image" src="https://github.com/user-attachments/assets/13f854a9-9fef-4560-adc0-6d17e87d9096" />
+    
+    -   Joy Caption Alpha 2, Joy Caption Alpha 1, Joy Caption Pre Alpha models will not be auto downloaded anymore with initial installation        
+    -   They will be auto downloaded when you first time use them        
+    -   All Joy Caption outputs are now displayed with text-wrapping and has copy generated prompt button feature
+        
+    <img width="1657" height="658" alt="image" src="https://github.com/user-attachments/assets/67d6b7e6-f984-4192-8e3f-781bcb16d788" />
+
 
 ## 16 July 2026 V1.3
 
