@@ -19,8 +19,19 @@
 - **For RunPod, SimplePod, Massed Compute and Linux please follow:**    
    - Massed\_Compute\_Instructions\_READ.txt        
    -  Runpod\_SimplePod\_Ultimate\_Caption\_Instructions.txt        
-- **The application runs on Torch 2.11 with CUDA 13, supports literally every GPU out there including server GPUs**    
-   - Moreover, we are using latest libraries such as Triton 3.7.1, Transformers 5.12.1, Bitsandbytes 0.49.2 thus we have the ultimate speed
+- **The application runs on Torch 2.13 with CUDA 13, supports consumer and server NVIDIA GPUs**
+   - The current installer also uses Gradio 6.20, Triton 3.7.x, and the latest compatible Transformers stack.
+
+## 16 July 2026 V1.3
+
+- The initial model download now installs only Qwen3-VL 8B Instruct and JoyCaption Beta One.
+- Pre-Alpha, Alpha One, Alpha Two, and six additional compatible Qwen vision models are downloaded automatically when first selected and used.
+- The Qwen tab now provides one model selector for Qwen3-VL 2B, 4B, 8B, 30B-A3B, the compatible Huihui variants, and Qwen3.6 27B variants.
+- Optional downloads use the resumable, hash-verifying downloader one directory above the app on Windows, Linux, RunPod, and Massed Compute.
+- All caption engines can use Transformers static-cache `torch.compile`. The app discovers and validates MSVC on Windows or a C++ compiler on Linux before compilation.
+- The recommended compile defaults are Inductor with `max-autotune-no-cudagraphs`, static shapes, a 32-entry Dynamo cache, and eight parallel compile workers. Windows automatically uses a compatible multiprocessing spawn pool; Linux uses TorchInductor's subprocess pool.
+- Compile workers are adjustable from 1 to 32 in every caption tab. They reduce first-run kernel compilation time while steady-state caption generation reuses the same compiled graph.
+- A reproducible eager-versus-compiled speed and VRAM report is available in `reports/torch_compile_benchmark.html`.
  
 ## 3 July 2026 V1.2
 

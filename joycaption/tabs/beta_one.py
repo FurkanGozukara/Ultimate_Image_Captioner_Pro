@@ -9,7 +9,8 @@ from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..common import NAME_OPTION, get_all_extra_options, html_message, save_custom_extra_option
 from ..prompt_options import BETA_CAPTION_TYPE_MAP as CAPTION_TYPE_MAP
 from ..vram import VRAM_PRESET_CHOICES, beta_vram_settings, default_vram_preset
-from .shared import TabUI, build_replace_pair_controls, run_open_folder, run_open_outputs
+from ..torch_compile import DEFAULT_COMPILE_SETTINGS
+from .shared import TabUI, build_replace_pair_controls, build_torch_compile_controls, run_open_folder, run_open_outputs
 
 
 ORDER = [
@@ -23,6 +24,13 @@ ORDER = [
     "low_cpu_mem_usage",
     "attention_backend",
     "use_liger_kernel",
+    "torch_compile",
+    "compile_backend",
+    "compile_mode",
+    "compile_dynamic",
+    "compile_fullgraph",
+    "compile_cache_size_limit",
+    "compile_threads",
     "device_id",
     "caption_type",
     "caption_length",
@@ -63,6 +71,7 @@ DEFAULTS: dict[str, Any] = {
     "low_cpu_mem_usage": True,
     "attention_backend": DEFAULT_JOY_ATTENTION,
     "use_liger_kernel": True,
+    **DEFAULT_COMPILE_SETTINGS,
     "device_id": "0",
     "caption_type": "Descriptive",
     "caption_length": "long",
@@ -204,6 +213,7 @@ def build_tab(engine: Any) -> TabUI:
                         allow_custom_value=False,
                     )
                 components["use_liger_kernel"] = gr.Checkbox(label="Apply Liger kernel when available", value=DEFAULTS["use_liger_kernel"])
+                build_torch_compile_controls(components, DEFAULTS)
         with gr.Column(scale=2):
             with gr.Accordion("Prompt", open=True):
                 with gr.Row():
@@ -341,6 +351,13 @@ def build_tab(engine: Any) -> TabUI:
             components["replace_pairs"],
             components["replace_case_sensitive"],
             components["replace_single_word"],
+            components["torch_compile"],
+            components["compile_backend"],
+            components["compile_mode"],
+            components["compile_dynamic"],
+            components["compile_fullgraph"],
+            components["compile_cache_size_limit"],
+            components["compile_threads"],
         ],
         outputs=[single_status, output_caption, global_error],
     )
@@ -376,6 +393,13 @@ def build_tab(engine: Any) -> TabUI:
             components["replace_pairs"],
             components["replace_case_sensitive"],
             components["replace_single_word"],
+            components["torch_compile"],
+            components["compile_backend"],
+            components["compile_mode"],
+            components["compile_dynamic"],
+            components["compile_fullgraph"],
+            components["compile_cache_size_limit"],
+            components["compile_threads"],
         ],
         outputs=[batch_status, zip_output, global_error],
     )
@@ -417,6 +441,13 @@ def build_tab(engine: Any) -> TabUI:
             components["replace_pairs"],
             components["replace_case_sensitive"],
             components["replace_single_word"],
+            components["torch_compile"],
+            components["compile_backend"],
+            components["compile_mode"],
+            components["compile_dynamic"],
+            components["compile_fullgraph"],
+            components["compile_cache_size_limit"],
+            components["compile_threads"],
         ],
         outputs=[folder_status, global_error],
     )

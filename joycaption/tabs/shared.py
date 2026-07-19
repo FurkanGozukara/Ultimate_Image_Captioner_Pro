@@ -7,6 +7,8 @@ from typing import Any, Sequence
 import gradio as gr
 
 from ..common import format_exception, normalize_replace_pairs, open_folder, ordered_values, values_from_components
+from ..torch_compile import COMPILE_BACKEND_CHOICES, COMPILE_DYNAMIC_CHOICES, COMPILE_MODE_CHOICES
+from ..torch_compile_workers import MAX_COMPILE_THREADS, MIN_COMPILE_THREADS
 
 
 REPLACE_PAIR_LIST_JS = r"""
@@ -33,6 +35,50 @@ class TabUI:
 
 def settings_from_values(order: Sequence[str], values: Sequence[Any]) -> dict[str, Any]:
     return values_from_components(order, values)
+
+
+def build_torch_compile_controls(
+    components: dict[str, gr.components.Component],
+    defaults: dict[str, Any],
+) -> None:
+    with gr.Row():
+        components["torch_compile"] = gr.Checkbox(label="Enable torch.compile", value=defaults["torch_compile"])
+        components["compile_backend"] = gr.Dropdown(
+            choices=COMPILE_BACKEND_CHOICES,
+            value=defaults["compile_backend"],
+            label="Compile Backend",
+            allow_custom_value=False,
+        )
+    with gr.Row():
+        components["compile_mode"] = gr.Dropdown(
+            choices=COMPILE_MODE_CHOICES,
+            value=defaults["compile_mode"],
+            label="Compile Mode",
+            allow_custom_value=False,
+        )
+        components["compile_dynamic"] = gr.Dropdown(
+            choices=COMPILE_DYNAMIC_CHOICES,
+            value=defaults["compile_dynamic"],
+            label="Shape Mode",
+            allow_custom_value=False,
+        )
+    with gr.Row():
+        components["compile_fullgraph"] = gr.Checkbox(label="Require Full Graph", value=defaults["compile_fullgraph"])
+        components["compile_threads"] = gr.Slider(
+            MIN_COMPILE_THREADS,
+            MAX_COMPILE_THREADS,
+            value=defaults["compile_threads"],
+            step=1,
+            label="Compile Workers",
+            info="Parallel TorchInductor compile workers. Windows uses the compatible spawn pool.",
+        )
+        components["compile_cache_size_limit"] = gr.Slider(
+            4,
+            128,
+            value=defaults["compile_cache_size_limit"],
+            step=1,
+            label="Compile Cache Size",
+        )
 
 
 def values_for_settings(order: Sequence[str], defaults: dict[str, Any], data: dict[str, Any] | None) -> list[Any]:

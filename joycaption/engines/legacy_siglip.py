@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - optional at import time
     PeftModel = None  # type: ignore[assignment]
 
 from ..attention import attention_load_kwargs, attention_runtime_context, normalize_attention_backend
+from ..torch_compile import generation_compile_kwargs
 from ..common import (
     BatchStopFlag,
     CaptionResult,
@@ -629,6 +630,7 @@ class LegacySiglipEngine:
                 inputs_embeds=inputs_embeds,
                 attention_mask=torch.ones_like(input_ids),
                 **generation_kwargs,
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
@@ -695,6 +697,7 @@ class LegacySiglipEngine:
                 do_sample=True,
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
@@ -768,6 +771,7 @@ class LegacySiglipEngine:
                 do_sample=True,
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
@@ -844,6 +848,7 @@ class LegacySiglipEngine:
                 inputs_embeds=inputs_embeds,
                 attention_mask=torch.ones_like(input_ids),
                 **generation_kwargs,
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
@@ -917,6 +922,7 @@ class LegacySiglipEngine:
                 do_sample=True,
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)
@@ -994,6 +1000,7 @@ class LegacySiglipEngine:
                 do_sample=True,
                 suppress_tokens=None,
                 **_pad_generation_kwargs(bundle.tokenizer),
+                **generation_compile_kwargs(settings, bundle.text_model),
             )
         _synchronize_if_cuda(device)
         generation_elapsed = max(time.time() - generation_started, 1e-9)

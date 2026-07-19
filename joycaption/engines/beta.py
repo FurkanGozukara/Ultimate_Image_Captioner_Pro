@@ -57,6 +57,7 @@ from ..common import (
     vram_usage_text,
 )
 from ..subprocess_runner import run_worker
+from ..torch_compile import compile_enabled, generation_compile_kwargs
 
 
 CAPTION_TYPE_MAP = {
@@ -306,6 +307,7 @@ class BetaEngine:
                 and self.state.devices == devices
                 and self.state.optimization_key == optimization_key
             ):
+                self.state.attention_settings = dict(optimizations)
                 log_event("Using cached model.", "Joy Caption Beta 1")
                 return "Model ready."
             self.clear_models()
@@ -423,13 +425,15 @@ class BetaEngine:
             "max_new_tokens": int(max_new_tokens),
             "do_sample": do_sample,
         }
+        generation_kwargs.update(generation_compile_kwargs(self.state.attention_settings or {}, model))
         pad_id = _pad_token_id(processor.tokenizer)
         if pad_id is not None:
             generation_kwargs["pad_token_id"] = pad_id
         if do_sample:
             generation_kwargs["temperature"] = max(float(temperature), 1e-5)
             generation_kwargs["top_p"] = float(top_p)
-        log_event(f"Generating {batch_count} Beta caption(s) in one batch | do_sample={do_sample}.", "Joy Caption Beta 1")
+        compile_note = " | torch.compile=enabled" if compile_enabled(self.state.attention_settings) else ""
+        log_event(f"Generating {batch_count} Beta caption(s) in one batch | do_sample={do_sample}{compile_note}.", "Joy Caption Beta 1")
         self.last_generation_stats = BetaGenerationStats()
         _synchronize_if_cuda(model.device)
         generation_started = time.time()
@@ -484,6 +488,13 @@ class BetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str, str], None, None]:
         log_event("Single image caption requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -492,6 +503,13 @@ class BetaEngine:
             "low_cpu_mem_usage": low_cpu_mem_usage,
             "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
+            "torch_compile": torch_compile,
+            "compile_backend": compile_backend,
+            "compile_mode": compile_mode,
+            "compile_dynamic": compile_dynamic,
+            "compile_fullgraph": compile_fullgraph,
+            "compile_cache_size_limit": compile_cache_size_limit,
+            "compile_threads": compile_threads,
         }
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
         if image_path is None:
@@ -666,6 +684,13 @@ class BetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         log_event("Files-to-ZIP batch requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -674,6 +699,13 @@ class BetaEngine:
             "low_cpu_mem_usage": low_cpu_mem_usage,
             "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
+            "torch_compile": torch_compile,
+            "compile_backend": compile_backend,
+            "compile_mode": compile_mode,
+            "compile_dynamic": compile_dynamic,
+            "compile_fullgraph": compile_fullgraph,
+            "compile_cache_size_limit": compile_cache_size_limit,
+            "compile_threads": compile_threads,
         }
         if not files_list:
             yield html_message("error", "No files selected."), None, ""
@@ -1036,6 +1068,13 @@ class BetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str], None, None]:
         log_event("Folder batch requested.", "Joy Caption Beta 1")
         optimizations = {
@@ -1044,6 +1083,13 @@ class BetaEngine:
             "low_cpu_mem_usage": low_cpu_mem_usage,
             "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
+            "torch_compile": torch_compile,
+            "compile_backend": compile_backend,
+            "compile_mode": compile_mode,
+            "compile_dynamic": compile_dynamic,
+            "compile_fullgraph": compile_fullgraph,
+            "compile_cache_size_limit": compile_cache_size_limit,
+            "compile_threads": compile_threads,
         }
         if use_subprocess:
             try:

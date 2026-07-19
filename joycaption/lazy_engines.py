@@ -9,6 +9,8 @@ from typing import Any, Generator, Sequence
 from .common import BASE_DIR, OUTPUTS_DIR, CaptionResult, coerce_image_path, format_exception, html_message
 from .prompt_options import build_beta_prompt
 from .subprocess_runner import cancel_active_workers, run_worker
+from .model_catalog import ModelSpec, get_model_spec, selected_qwen_model
+from .model_downloads import download_required, ensure_model_available
 
 
 def _clear_python_and_cuda_cache() -> None:
@@ -60,6 +62,14 @@ class LazyLegacyEngine:
     def __init__(self, variant: str, base_dir: Path = BASE_DIR) -> None:
         self.variant = variant
         self.base_dir = Path(base_dir)
+        self.model_key = {
+            "pre_alpha": "joycaption_pre_alpha",
+            "alpha_one": "joycaption_alpha_one",
+            "alpha_two": "joycaption_alpha_two",
+        }.get(variant, "")
+        if not self.model_key:
+            raise ValueError(f"Unknown legacy variant: {variant}")
+        self.model_spec = get_model_spec(self.model_key)
         self._engine: Any | None = None
         self._lock = threading.RLock()
         self._registry_key = f"legacy:{variant}"
@@ -67,6 +77,7 @@ class LazyLegacyEngine:
 
     def _get_engine(self) -> Any:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        ensure_model_available(self.model_key)
         with self._lock:
             if self._engine is not None:
                 return self._engine
@@ -85,6 +96,14 @@ class LazyLegacyEngine:
             else:
                 raise ValueError(f"Unknown legacy variant: {self.variant}")
             return self._engine
+
+    def download_needed(self) -> bool:
+        return download_required(self.model_key)
+
+    def prepare_model(self) -> tuple[str, bool]:
+        required = download_required(self.model_key)
+        availability = ensure_model_available(self.model_key)
+        return availability.spec.label, required or availability.downloaded
 
     def clear_models(self) -> None:
         with self._lock:
@@ -119,6 +138,7 @@ class LazyLegacyEngine:
 
     def caption_single(self, image_input: Any, settings: dict[str, Any]) -> CaptionResult:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        ensure_model_available(self.model_key)
         if settings.get("use_subprocess", False):
             image_path = coerce_image_path(image_input, OUTPUTS_DIR / "temp")
             if image_path is None:
@@ -144,6 +164,18 @@ class LazyLegacyEngine:
 
     def batch_folder(self, settings: dict[str, Any]) -> Generator[str, None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        try:
+            if self.download_needed():
+                yield (
+                    f"{self.model_spec.label} is not installed. Downloading it now with the resumable model downloader. "
+                    "Captioning will begin automatically when validation finishes."
+                )
+            label, downloaded = self.prepare_model()
+        except Exception as exc:
+            yield f"Model download failed: {format_exception(exc)}"
+            return
+        if downloaded:
+            yield f"{label} download verified. Starting the folder batch."
         if settings.get("use_subprocess", False):
             yield "Starting subprocess batch. The child process will exit when the run ends."
             try:
@@ -168,6 +200,8 @@ class LazyLegacyEngine:
 class LazyBetaEngine:
     def __init__(self, model_path: Path) -> None:
         self.model_path = Path(model_path)
+        self.model_key = "joycaption_beta_one"
+        self.model_spec = get_model_spec(self.model_key)
         self._engine: Any | None = None
         self._lock = threading.RLock()
         self._registry_key = f"beta:{self.model_path.resolve()}"
@@ -175,6 +209,7 @@ class LazyBetaEngine:
 
     def _get_engine(self) -> Any:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        ensure_model_available(self.model_key)
         with self._lock:
             if self._engine is None:
                 from .engines.beta import BetaEngine
@@ -244,8 +279,32 @@ class LazyBetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        if input_image is None:
+            yield html_message("error", "No image selected."), "", ""
+            return
+        if download_required(self.model_key):
+            yield html_message(
+                "info",
+                f"{self.model_spec.label} is not installed. Downloading it now with the resumable model downloader. "
+                "Captioning will begin automatically when validation finishes.",
+            ), "", ""
+        try:
+            availability = ensure_model_available(self.model_key)
+        except Exception as exc:
+            error = html_message("error", format_exception(exc))
+            yield error, "", error
+            return
+        if availability.downloaded:
+            yield html_message("success", f"{availability.spec.label} download verified. Loading the model..."), "", ""
         if not use_subprocess:
             yield from self._get_engine().caption_single(
                 input_image,
@@ -270,6 +329,13 @@ class LazyBetaEngine:
                 replace_pairs,
                 replace_case_sensitive,
                 replace_single_word,
+                torch_compile,
+                compile_backend,
+                compile_mode,
+                compile_dynamic,
+                compile_fullgraph,
+                compile_cache_size_limit,
+                compile_threads,
             )
             return
 
@@ -279,6 +345,13 @@ class LazyBetaEngine:
             "low_cpu_mem_usage": low_cpu_mem_usage,
             "attention_backend": attention_backend,
             "use_liger_kernel": use_liger_kernel,
+            "torch_compile": torch_compile,
+            "compile_backend": compile_backend,
+            "compile_mode": compile_mode,
+            "compile_dynamic": compile_dynamic,
+            "compile_fullgraph": compile_fullgraph,
+            "compile_cache_size_limit": compile_cache_size_limit,
+            "compile_threads": compile_threads,
         }
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
         if image_path is None:
@@ -348,8 +421,28 @@ class LazyBetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str | None, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        if not files_list:
+            yield html_message("error", "No files selected."), None, ""
+            return
+        if download_required(self.model_key):
+            yield html_message("info", f"{self.model_spec.label} is not installed. Downloading it now..."), None, ""
+        try:
+            availability = ensure_model_available(self.model_key)
+        except Exception as exc:
+            error = html_message("error", format_exception(exc))
+            yield error, None, error
+            return
+        if availability.downloaded:
+            yield html_message("success", f"{availability.spec.label} download verified. Starting the batch..."), None, ""
         if not use_subprocess:
             yield from self._get_engine().process_batch_files_to_zip(
                 files_list,
@@ -378,10 +471,14 @@ class LazyBetaEngine:
                 replace_pairs,
                 replace_case_sensitive,
                 replace_single_word,
+                torch_compile,
+                compile_backend,
+                compile_mode,
+                compile_dynamic,
+                compile_fullgraph,
+                compile_cache_size_limit,
+                compile_threads,
             )
-            return
-        if not files_list:
-            yield html_message("error", "No files selected."), None, ""
             return
         try:
             yield html_message("info", "Starting subprocess ZIP batch..."), None, ""
@@ -414,6 +511,13 @@ class LazyBetaEngine:
                         "low_cpu_mem_usage": low_cpu_mem_usage,
                         "attention_backend": attention_backend,
                         "use_liger_kernel": use_liger_kernel,
+                        "torch_compile": torch_compile,
+                        "compile_backend": compile_backend,
+                        "compile_mode": compile_mode,
+                        "compile_dynamic": compile_dynamic,
+                        "compile_fullgraph": compile_fullgraph,
+                        "compile_cache_size_limit": compile_cache_size_limit,
+                        "compile_threads": compile_threads,
                     },
                 },
             )
@@ -456,8 +560,29 @@ class LazyBetaEngine:
         replace_pairs: Any | None = None,
         replace_case_sensitive: bool = False,
         replace_single_word: bool = False,
+        torch_compile: bool = False,
+        compile_backend: str = "inductor",
+        compile_mode: str = "max-autotune-no-cudagraphs",
+        compile_dynamic: str = "false",
+        compile_fullgraph: bool = False,
+        compile_cache_size_limit: int = 32,
+        compile_threads: int = 8,
     ) -> Generator[tuple[str, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        input_folder = Path(str(input_folder_str or "")).expanduser()
+        if not input_folder.is_dir():
+            yield html_message("error", f"Input folder does not exist: {input_folder}"), ""
+            return
+        if download_required(self.model_key):
+            yield html_message("info", f"{self.model_spec.label} is not installed. Downloading it now..."), ""
+        try:
+            availability = ensure_model_available(self.model_key)
+        except Exception as exc:
+            error = html_message("error", format_exception(exc))
+            yield error, error
+            return
+        if availability.downloaded:
+            yield html_message("success", f"{availability.spec.label} download verified. Starting the batch..."), ""
         if not use_subprocess:
             yield from self._get_engine().run_batch_folder_processing(
                 input_folder_str,
@@ -492,6 +617,13 @@ class LazyBetaEngine:
                 replace_pairs,
                 replace_case_sensitive,
                 replace_single_word,
+                torch_compile,
+                compile_backend,
+                compile_mode,
+                compile_dynamic,
+                compile_fullgraph,
+                compile_cache_size_limit,
+                compile_threads,
             )
             return
         try:
@@ -531,6 +663,13 @@ class LazyBetaEngine:
                         "low_cpu_mem_usage": low_cpu_mem_usage,
                         "attention_backend": attention_backend,
                         "use_liger_kernel": use_liger_kernel,
+                        "torch_compile": torch_compile,
+                        "compile_backend": compile_backend,
+                        "compile_mode": compile_mode,
+                        "compile_dynamic": compile_dynamic,
+                        "compile_fullgraph": compile_fullgraph,
+                        "compile_cache_size_limit": compile_cache_size_limit,
+                        "compile_threads": compile_threads,
                     },
                 },
             )
@@ -551,23 +690,49 @@ class LazyQwenEngine:
     def __init__(self, model_path: Path) -> None:
         self.model_path = Path(model_path)
         self._engine: Any | None = None
+        self._engine_model_key: str | None = None
         self._lock = threading.RLock()
-        self._registry_key = f"qwen:{self.model_path.resolve()}"
+        self._registry_key = "qwen:selectable"
         _MODEL_SWITCH_REGISTRY.register(self._registry_key, self)
 
-    def _get_engine(self) -> Any:
+    def _selected_spec(self, settings: dict[str, Any]) -> ModelSpec:
+        return selected_qwen_model(settings)
+
+    def _get_engine(self, settings: dict[str, Any]) -> Any:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
+        spec = self._selected_spec(settings)
         with self._lock:
+            if self._engine is not None and self._engine_model_key != spec.key:
+                clear = getattr(self._engine, "clear_models", None)
+                if callable(clear):
+                    clear()
+                self._engine = None
             if self._engine is None:
                 from .engines.qwen import QwenEngine
 
-                self._engine = QwenEngine(self.model_path)
+                self._engine = QwenEngine(spec.path, spec.key)
+                self._engine_model_key = spec.key
             return self._engine
+
+    @staticmethod
+    def _download_message(spec: ModelSpec) -> str:
+        return html_message(
+            "info",
+            f"{spec.label} is not installed. Downloading it now with the resumable model downloader. "
+            "Captioning will begin automatically when validation finishes.",
+        )
+
+    def _ensure_selected_model(self, settings: dict[str, Any]) -> tuple[ModelSpec, bool]:
+        spec = self._selected_spec(settings)
+        required = download_required(spec.key)
+        availability = ensure_model_available(spec.key)
+        return availability.spec, required or availability.downloaded
 
     def clear_models(self) -> None:
         with self._lock:
             engine = self._engine
             self._engine = None
+            self._engine_model_key = None
         if engine is not None:
             clear = getattr(engine, "clear_models", None)
             if callable(clear):
@@ -589,14 +754,20 @@ class LazyQwenEngine:
 
     def caption_single(self, input_image: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str, dict[str, Any]], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
-        if not settings.get("use_subprocess", False):
-            yield from self._get_engine().caption_single(input_image, settings)
-            return
         image_path = coerce_image_path(input_image, OUTPUTS_DIR / "temp")
         if image_path is None:
             yield html_message("error", "No image selected."), "", "", [], "", {}
             return
         try:
+            spec = self._selected_spec(settings)
+            if download_required(spec.key):
+                yield self._download_message(spec), "", "", [], "", {}
+            spec, downloaded = self._ensure_selected_model(settings)
+            if downloaded:
+                yield html_message("success", f"{spec.label} download verified. Loading the model..."), "", "", [], "", {}
+            if not settings.get("use_subprocess", False):
+                yield from self._get_engine(settings).caption_single(image_path, settings)
+                return
             yield html_message("info", "Starting Qwen subprocess caption run..."), "", "", [], "", {}
             data = run_worker(
                 "qwen_single",
@@ -614,7 +785,7 @@ class LazyQwenEngine:
                 data.get("autosave_target") or {},
             )
         except Exception as exc:
-            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen subprocess generation failed."), {}
+            yield html_message("error", format_exception(exc)), "", "", [], html_message("error", "Qwen generation failed."), {}
 
     def process_batch_files_to_zip(
         self,
@@ -622,13 +793,19 @@ class LazyQwenEngine:
         settings: dict[str, Any],
     ) -> Generator[tuple[str, str | None, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
-        if not settings.get("use_subprocess", False):
-            yield from self._get_engine().process_batch_files_to_zip(files_list, settings)
-            return
         if not files_list:
             yield html_message("error", "No files selected."), None, ""
             return
         try:
+            spec = self._selected_spec(settings)
+            if download_required(spec.key):
+                yield self._download_message(spec), None, ""
+            spec, downloaded = self._ensure_selected_model(settings)
+            if downloaded:
+                yield html_message("success", f"{spec.label} download verified. Starting the batch..."), None, ""
+            if not settings.get("use_subprocess", False):
+                yield from self._get_engine(settings).process_batch_files_to_zip(files_list, settings)
+                return
             yield html_message("info", "Starting Qwen subprocess ZIP batch..."), None, ""
             data = run_worker(
                 "qwen_zip",
@@ -639,14 +816,24 @@ class LazyQwenEngine:
             )
             yield str(data.get("status") or html_message("success", "Qwen ZIP batch complete.")), data.get("zip_path"), str(data.get("error") or "")
         except Exception as exc:
-            yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen subprocess ZIP batch failed.")
+            yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen ZIP batch failed.")
 
     def run_batch_folder_processing(self, settings: dict[str, Any]) -> Generator[tuple[str, str], None, None]:
         _MODEL_SWITCH_REGISTRY.activate(self._registry_key)
-        if not settings.get("use_subprocess", False):
-            yield from self._get_engine().run_batch_folder_processing(settings)
+        input_folder = Path(str(settings.get("folder_input") or "")).expanduser()
+        if not input_folder.is_dir():
+            yield html_message("error", f"Input folder does not exist: {input_folder}"), ""
             return
         try:
+            spec = self._selected_spec(settings)
+            if download_required(spec.key):
+                yield self._download_message(spec), ""
+            spec, downloaded = self._ensure_selected_model(settings)
+            if downloaded:
+                yield html_message("success", f"{spec.label} download verified. Starting the folder batch..."), ""
+            if not settings.get("use_subprocess", False):
+                yield from self._get_engine(settings).run_batch_folder_processing(settings)
+                return
             yield html_message("info", "Starting Qwen subprocess folder batch..."), ""
             data = run_worker(
                 "qwen_folder",
@@ -654,7 +841,7 @@ class LazyQwenEngine:
             )
             yield str(data.get("status") or html_message("success", "Qwen folder batch complete.")), str(data.get("error") or "")
         except Exception as exc:
-            yield html_message("error", format_exception(exc)), html_message("error", "Qwen subprocess folder batch failed.")
+            yield html_message("error", format_exception(exc)), html_message("error", "Qwen folder batch failed.")
 
     def _file_path(self, item: Any) -> Path:
         if isinstance(item, (str, Path)):

@@ -6,7 +6,8 @@ import gradio as gr
 
 from ..attention import ATTENTION_BACKEND_CHOICES, DEFAULT_JOY_ATTENTION
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, legacy_vram_settings
-from .shared import TabUI, build_replace_pair_controls, error_pair, run_open_folder, run_open_outputs, settings_from_values
+from ..torch_compile import DEFAULT_COMPILE_SETTINGS
+from .shared import TabUI, build_replace_pair_controls, build_torch_compile_controls, error_pair, run_open_folder, run_open_outputs, settings_from_values
 
 
 ORDER = [
@@ -25,6 +26,13 @@ ORDER = [
     "clear_cuda_cache",
     "low_cpu_mem_usage",
     "attention_backend",
+    "torch_compile",
+    "compile_backend",
+    "compile_mode",
+    "compile_dynamic",
+    "compile_fullgraph",
+    "compile_cache_size_limit",
+    "compile_threads",
     "caption_type",
     "caption_tone",
     "caption_length",
@@ -59,6 +67,7 @@ DEFAULTS: dict[str, Any] = {
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
     "attention_backend": DEFAULT_JOY_ATTENTION,
+    **DEFAULT_COMPILE_SETTINGS,
     "caption_type": "descriptive",
     "caption_tone": "formal",
     "caption_length": "any",
@@ -155,6 +164,7 @@ def build_tab(engine: Any) -> TabUI:
                         label="Attention Backend",
                         allow_custom_value=False,
                     )
+                build_torch_compile_controls(components, DEFAULTS)
 
     save_info = gr.Textbox(label="Save Information", lines=4, elem_classes=["jc-status"])
 
@@ -185,10 +195,17 @@ def build_tab(engine: Any) -> TabUI:
         settings["overwrite"] = False
         settings["append"] = False
         try:
+            if image is None:
+                raise ValueError("No input image selected.")
+            if engine.download_needed():
+                yield "", f"{engine.model_spec.label} is not installed. Downloading it now with the resumable model downloader..."
+            label, downloaded = engine.prepare_model()
+            if downloaded:
+                yield "", f"{label} download verified. Loading the model..."
             result = engine.caption_single(image, settings)
-            return result.caption_with_status
+            yield result.caption_with_status
         except Exception as exc:
-            return error_pair(exc)
+            yield error_pair(exc)
 
     def run_batch(*values):
         settings = settings_from_values(ORDER, values)

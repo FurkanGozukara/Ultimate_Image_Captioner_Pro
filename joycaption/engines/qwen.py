@@ -22,9 +22,9 @@ from transformers import AutoProcessor, BitsAndBytesConfig, StoppingCriteria, St
 from transformers.utils import logging as hf_logging
 
 try:
-    from transformers import Qwen3VLForConditionalGeneration
+    from transformers import AutoModelForImageTextToText
 except Exception as exc:  # pragma: no cover - import depends on user venv
-    Qwen3VLForConditionalGeneration = None  # type: ignore[assignment]
+    AutoModelForImageTextToText = None  # type: ignore[assignment]
     QWEN_IMPORT_ERROR = exc
 else:
     QWEN_IMPORT_ERROR = None
@@ -67,9 +67,12 @@ from ..json_tools import (
     save_boxed_image,
 )
 from ..qwen_presets import OFFICIAL_V1_PRESET_ID, get_qwen_preset
+from ..model_catalog import DEFAULT_QWEN_MODEL_KEY, get_model_spec
+from ..torch_compile import compile_enabled, generation_compile_kwargs
 
 
 SCOPE = "Qwen3 VL 8B Instruct"
+MAX_THINKING_TOKENS = 4096
 
 
 @dataclass
@@ -417,9 +420,39 @@ class ConsoleProgressStoppingCriteria(StoppingCriteria):
         print("", flush=True)
 
 
+class ThinkingBudgetCriteria(StoppingCriteria):
+    """Give every batched answer its full token budget after ``</think>``."""
+
+    def __init__(self, think_end_token_id: int, answer_tokens: int, batch_size: int):
+        self.think_end_token_id = int(think_end_token_id)
+        self.answer_tokens = max(1, int(answer_tokens))
+        self.answer_starts: list[int | None] = [None] * max(1, int(batch_size))
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs: Any) -> torch.BoolTensor:
+        del scores, kwargs
+        stopped: list[bool] = []
+        width = int(input_ids.shape[1])
+        for index, row in enumerate(input_ids):
+            if index >= len(self.answer_starts):
+                self.answer_starts.append(None)
+            answer_start = self.answer_starts[index]
+            if answer_start is None and int(row[-1].item()) == self.think_end_token_id:
+                answer_start = width
+                self.answer_starts[index] = answer_start
+            stopped.append(answer_start is not None and width - answer_start >= self.answer_tokens)
+        return torch.tensor(stopped, device=input_ids.device, dtype=torch.bool)
+
+
 class QwenEngine:
-    def __init__(self, model_path: Path):
+    def __init__(self, model_path: Path, model_key: str = DEFAULT_QWEN_MODEL_KEY):
         self.model_path = Path(model_path)
+        self.model_key = str(model_key)
+        try:
+            self.model_spec = get_model_spec(self.model_key)
+            self.scope = self.model_spec.label
+        except ValueError:
+            self.model_spec = None
+            self.scope = SCOPE
         self.state = QwenModelState()
         self.stop_flag = BatchStopFlag()
         self.last_generation_stats = QwenGenerationStats()
@@ -438,7 +471,7 @@ class QwenEngine:
 
     def _load_processor(self) -> Any:
         if self.state.processor is None:
-            log_event(f"Loading processor from {self.model_path}.", SCOPE)
+            log_event(f"Loading processor from {self.model_path}.", self.scope)
             self.state.processor = AutoProcessor.from_pretrained(
                 self.model_path,
                 trust_remote_code=True,
@@ -466,9 +499,9 @@ class QwenEngine:
         raise ValueError(f"Unknown Qwen quantization: {quant}")
 
     def load_model(self, settings: dict[str, Any]) -> str:
-        if Qwen3VLForConditionalGeneration is None:
+        if AutoModelForImageTextToText is None:
             raise RuntimeError(
-                "The installed transformers package cannot import Qwen3VLForConditionalGeneration. "
+                "The installed transformers package cannot import AutoModelForImageTextToText. "
                 f"Original error: {QWEN_IMPORT_ERROR}"
             )
         quant = str(settings.get("model_quantization") or "bf16")
@@ -510,8 +543,8 @@ class QwenEngine:
         else:
             load_kwargs["dtype"] = torch.bfloat16 if device_map != "cpu" else torch.float32
 
-        log_event(f"Loading Qwen model on {device_map} with quant={quant}.", SCOPE)
-        model = Qwen3VLForConditionalGeneration.from_pretrained(self.model_path, **load_kwargs)
+        log_event(f"Loading {self.scope} on {device_map} with quant={quant}.", self.scope)
+        model = AutoModelForImageTextToText.from_pretrained(self.model_path, **load_kwargs)
         model.eval()
         self.state.model = model
         self.state.quant = quant
@@ -551,15 +584,17 @@ class QwenEngine:
         first_settings = settings_list[0]
         max_new_tokens = int(first_settings.get("max_new_tokens", 512) or 512)
         messages_batch = [self._messages_for(image, settings) for image, settings in zip(images, settings_list)]
-        log_event(f"Preparing Qwen inputs (batch={len(images)}, max_new_tokens={max_new_tokens}).", SCOPE)
-        inputs = processor.apply_chat_template(
-            messages_batch,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            processor_kwargs={"padding": True},
-        )
+        log_event(f"Preparing Qwen inputs (batch={len(images)}, max_new_tokens={max_new_tokens}).", self.scope)
+        template_kwargs: dict[str, Any] = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+            "processor_kwargs": {"padding": True},
+        }
+        if self.model_spec is not None and self.model_spec.supports_thinking:
+            template_kwargs["enable_thinking"] = bool(first_settings.get("enable_thinking", False))
+        inputs = processor.apply_chat_template(messages_batch, **template_kwargs)
         inputs = inputs.to(model.device)
         model_dtype = getattr(model, "dtype", None)
         if isinstance(model_dtype, torch.dtype):
@@ -574,15 +609,34 @@ class QwenEngine:
             "do_sample": do_sample,
             "repetition_penalty": float(first_settings.get("repetition_penalty", 1.0) or 1.0),
         }
+        stopping_criteria: list[StoppingCriteria] = []
+        thinking_enabled = bool(
+            self.model_spec is not None
+            and self.model_spec.supports_thinking
+            and first_settings.get("enable_thinking", False)
+        )
+        if thinking_enabled:
+            think_end_token_id = processor.tokenizer.convert_tokens_to_ids("</think>")
+            if isinstance(think_end_token_id, int) and think_end_token_id >= 0:
+                generation_kwargs["max_new_tokens"] = MAX_THINKING_TOKENS + max_new_tokens
+                stopping_criteria.append(ThinkingBudgetCriteria(think_end_token_id, max_new_tokens, len(images)))
+        generation_kwargs.update(generation_compile_kwargs(first_settings, model))
         if do_sample:
             generation_kwargs["temperature"] = max(temperature, 1e-5)
             generation_kwargs["top_p"] = float(first_settings.get("top_p", 0.8) or 0.8)
             generation_kwargs["top_k"] = int(first_settings.get("top_k", 20) or 20)
-        log_event(f"Generating {len(images)} Qwen caption(s) in one batch | do_sample={do_sample}.", SCOPE)
+        compile_note = " | torch.compile=enabled" if compile_enabled(first_settings) else ""
+        log_event(f"Generating {len(images)} Qwen caption(s) in one batch | do_sample={do_sample}{compile_note}.", self.scope)
         progress = None
         if bool(first_settings.get("console_progress", True)):
-            progress = ConsoleProgressStoppingCriteria(SCOPE, int(inputs.input_ids.shape[-1]), max_new_tokens)
-            generation_kwargs["stopping_criteria"] = StoppingCriteriaList([progress])
+            progress = ConsoleProgressStoppingCriteria(
+                self.scope,
+                int(inputs.input_ids.shape[-1]),
+                int(generation_kwargs["max_new_tokens"]),
+            )
+            stopping_criteria.append(progress)
+        if stopping_criteria:
+            generation_kwargs["stopping_criteria"] = StoppingCriteriaList(stopping_criteria)
         _synchronize_if_cuda(model.device)
         generation_started = time.time()
         try:
@@ -602,11 +656,17 @@ class QwenEngine:
         )
         if progress is not None:
             progress.finish(generated_token_count)
-        log_event(f"Qwen generation speed: {_generation_stats_text(self.last_generation_stats)}.", SCOPE)
+        log_event(f"Qwen generation speed: {_generation_stats_text(self.last_generation_stats)}.", self.scope)
         prompt_width = int(inputs.input_ids.shape[-1])
         trimmed = [out_ids[prompt_width:] for out_ids in generated_ids]
         output_text = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-        return [str(text).strip() for text in output_text]
+        captions: list[str] = []
+        for text in output_text:
+            caption = str(text)
+            if "</think>" in caption:
+                caption = caption.rsplit("</think>", 1)[-1]
+            captions.append(caption.strip())
+        return captions
 
     @torch.inference_mode()
     def generate_caption(self, image: Image.Image, settings: dict[str, Any]) -> str:
@@ -697,7 +757,7 @@ class QwenEngine:
         return _normalize_text_output(raw_caption, settings), None, []
 
     def caption_single(self, image_input: Any | None, settings: dict[str, Any]) -> Generator[tuple[str, str, str, list[list[Any]], str, dict[str, Any]], None, None]:
-        log_event("Qwen single image caption requested.", SCOPE)
+        log_event("Qwen single image caption requested.", self.scope)
         if settings.get("app_side_only", False):
             yield html_message("error", "This preset is an app-side utility and does not run image generation."), "", "", [], "", {}
             return
@@ -713,7 +773,8 @@ class QwenEngine:
             before_vram = vram_usage_text()
             yield html_message("info", "Loading Qwen model..."), "", "", [], "", {}
             status = self.load_model(settings)
-            yield html_message("info", f"{status} Generating..."), "", "", [], "", {}
+            action = "Compiling the decode graph, then generating..." if compile_enabled(settings) else "Generating..."
+            yield html_message("info", f"{status} {action}"), "", "", [], "", {}
             image = load_rgb_image(image_path, int(settings.get("image_long_edge", 1024) or 1024))
             image_settings = _settings_for_image(settings, image_path, image)
             raw_caption = self.generate_caption(image, image_settings)
@@ -724,7 +785,8 @@ class QwenEngine:
             after_vram = vram_usage_text()
             metadata = {
                 "generation_type": "single_image",
-                "engine": "qwen3_vl_8b_instruct",
+                "engine": self.model_key,
+                "model_label": self.scope,
                 "model_path": str(self.model_path),
                 "source_image_path": str(image_path),
                 "preset_id": _preset_id(settings),
@@ -815,7 +877,7 @@ class QwenEngine:
         files_list: Sequence[Any] | None,
         settings: dict[str, Any],
     ) -> Generator[tuple[str, str | None, str], None, None]:
-        log_event("Qwen files-to-ZIP batch requested.", SCOPE)
+        log_event("Qwen files-to-ZIP batch requested.", self.scope)
         if not files_list:
             yield html_message("error", "No files selected."), None, ""
             return
@@ -841,7 +903,7 @@ class QwenEngine:
             aggregate_lock = threading.Lock()
             batch_queue: queue.Queue[tuple[str, str]] = queue.Queue()
             chunks = split_round_robin(paths, devices)
-            log_event(f"Qwen ZIP batch started: {total} image(s), batch_size={batch_size}, devices={devices}.", SCOPE)
+            log_event(f"Qwen ZIP batch started: {total} image(s), batch_size={batch_size}, devices={devices}.", self.scope)
             process_chunks = [
                 (worker_device, chunk)
                 for worker_device, chunk in zip(devices, chunks)
@@ -870,7 +932,7 @@ class QwenEngine:
                         daemon=False,
                     )
                     processes.append(process)
-                    log_event(f"Starting Qwen ZIP process worker for device {worker_device}: {len(chunk)} image(s).", SCOPE)
+                    log_event(f"Starting Qwen ZIP process worker for device {worker_device}: {len(chunk)} image(s).", self.scope)
                     process.start()
 
                 try:
@@ -915,7 +977,7 @@ class QwenEngine:
                                 )
                             if event.get("message"):
                                 line = f"{line} {event['message']}"
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("info", line), None, ""
                         elif kind == "done":
                             key = str(worker_device)
@@ -927,7 +989,7 @@ class QwenEngine:
                                 f"{int(event.get('local_processed', 0) or 0)} processed, "
                                 f"{int(event.get('local_failed', 0) or 0)} failed."
                             )
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                         elif kind == "fatal":
                             key = str(worker_device)
                             if key not in done_devices:
@@ -936,7 +998,7 @@ class QwenEngine:
                                 with aggregate_lock:
                                     aggregate["failed"] += chunk_sizes.get(key, 0)
                             line = f"Device {worker_device}: ZIP process failed: {event.get('error') or 'unknown error'}"
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("error", line), None, ""
 
                     for process in processes:
@@ -947,7 +1009,7 @@ class QwenEngine:
                             with aggregate_lock:
                                 aggregate["failed"] += chunk_sizes.get(key, 0)
                             line = f"Device {worker_device}: ZIP process exited with code {process.exitcode}."
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("error", line), None, ""
                 finally:
                     for process in processes:
@@ -970,7 +1032,7 @@ class QwenEngine:
 
             def worker(worker_device: int | str, chunk: list[Path]) -> None:
                 nonlocal total_generated_tokens, total_generation_seconds
-                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path)
+                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path, self.model_key)
                 worker_settings = dict(settings)
                 worker_settings["device_id"] = str(worker_device)
                 local_processed = 0
@@ -986,7 +1048,7 @@ class QwenEngine:
                             settings_batch = [_settings_for_image(worker_settings, path, image) for path, image in zip(batch_paths, images)]
                             log_event(
                                 f"Device {worker_device}: Qwen ZIP true batch {offset + 1}-{offset + len(batch_paths)} of {len(chunk)}.",
-                                SCOPE,
+                                self.scope,
                             )
                             batch_started = time.time()
                             raw_outputs = worker_engine.generate_captions(images, settings_batch)
@@ -998,7 +1060,7 @@ class QwenEngine:
                                 for path, image, image_settings, raw in zip(batch_paths, images, settings_batch, raw_outputs):
                                     final, parsed, warnings = worker_engine._finalize_output(image, raw, image_settings)
                                     if warnings:
-                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", self.scope)
                                     captions[path.with_suffix(extension).name] = final
                                     if bool(settings.get("auto_save_boxed_image", True)):
                                         rows = json_to_element_rows(parsed, bbox_order="yxyx")
@@ -1008,7 +1070,7 @@ class QwenEngine:
                                                 if image_bytes:
                                                     boxed_images[f"{path.stem}_boxed.png"] = image_bytes
                                             except Exception as exc:
-                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", self.scope)
                                     aggregate["processed"] += 1
                                     local_processed += 1
                                 token_speed = total_generated_tokens / max(total_generation_seconds, 1e-9)
@@ -1067,9 +1129,9 @@ class QwenEngine:
                     continue
                 if kind == "done":
                     done_count += 1
-                    log_event(line, SCOPE)
+                    log_event(line, self.scope)
                 else:
-                    log_event(line, SCOPE)
+                    log_event(line, self.scope)
                     yield html_message("info", line), None, ""
                 if self.stop_flag.value:
                     yield html_message("info", f"ZIP batch cancelled. Processed {aggregate['processed']}/{total} images."), None, ""
@@ -1093,7 +1155,7 @@ class QwenEngine:
             yield html_message("error", format_exception(exc)), None, html_message("error", "Qwen ZIP batch failed. Check the terminal for details.")
 
     def run_batch_folder_processing(self, settings: dict[str, Any]) -> Generator[tuple[str, str], None, None]:
-        log_event("Qwen folder batch requested.", SCOPE)
+        log_event("Qwen folder batch requested.", self.scope)
         if settings.get("app_side_only", False):
             yield html_message("error", "This preset is an app-side utility and does not run image generation."), ""
             return
@@ -1146,7 +1208,7 @@ class QwenEngine:
             total = len(all_paths)
             log_event(
                 f"Qwen folder batch started: {len(paths)} queued, {skipped} skipped, batch_size={batch_size}, devices={devices}.",
-                SCOPE,
+                self.scope,
             )
             process_chunks = [
                 (worker_device, chunk)
@@ -1178,7 +1240,7 @@ class QwenEngine:
                         daemon=False,
                     )
                     processes.append(process)
-                    log_event(f"Starting Qwen process worker for device {worker_device}: {len(chunk)} image(s).", SCOPE)
+                    log_event(f"Starting Qwen process worker for device {worker_device}: {len(chunk)} image(s).", self.scope)
                     process.start()
 
                 try:
@@ -1224,7 +1286,7 @@ class QwenEngine:
                                 )
                             if event.get("message"):
                                 line = f"{line} {event['message']}"
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("info", line), ""
                         elif kind == "done":
                             key = str(worker_device)
@@ -1237,7 +1299,7 @@ class QwenEngine:
                                 f"{int(event.get('local_skipped', 0) or 0)} skipped, "
                                 f"{int(event.get('local_failed', 0) or 0)} failed."
                             )
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("info", line), ""
                         elif kind == "fatal":
                             key = str(worker_device)
@@ -1247,7 +1309,7 @@ class QwenEngine:
                                 with aggregate_lock:
                                     aggregate["failed"] += chunk_sizes.get(key, 0)
                             line = f"Device {worker_device}: process failed: {event.get('error') or 'unknown error'}"
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("error", line), ""
 
                     for process in processes:
@@ -1258,7 +1320,7 @@ class QwenEngine:
                             with aggregate_lock:
                                 aggregate["failed"] += chunk_sizes.get(key, 0)
                             line = f"Device {worker_device}: process exited with code {process.exitcode}."
-                            log_event(line, SCOPE)
+                            log_event(line, self.scope)
                             yield html_message("error", line), ""
                 finally:
                     for process in processes:
@@ -1275,7 +1337,7 @@ class QwenEngine:
 
             def worker(worker_device: int | str, chunk: list[Path]) -> None:
                 nonlocal total_generated_tokens, total_generation_seconds
-                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path)
+                worker_engine = self if len(devices) == 1 else QwenEngine(self.model_path, self.model_key)
                 worker_settings = dict(settings)
                 worker_settings["device_id"] = str(worker_device)
                 local_processed = 0
@@ -1328,7 +1390,7 @@ class QwenEngine:
                             ]
                             log_event(
                                 f"Device {worker_device}: Qwen folder true batch {offset + 1}-{offset + len(work_items)} of {len(chunk)}.",
-                                SCOPE,
+                                self.scope,
                             )
                             batch_started = time.time()
                             raw_outputs = worker_engine.generate_captions(images, settings_batch)
@@ -1346,7 +1408,7 @@ class QwenEngine:
                                 ):
                                     final, parsed, warnings = worker_engine._finalize_output(image, raw, image_settings)
                                     if warnings:
-                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", self.scope)
                                     actual_caption = save_caption_file(
                                         output_caption_path,
                                         final,
@@ -1369,7 +1431,7 @@ class QwenEngine:
                                                     bbox_order="yxyx",
                                                 )
                                             except Exception as exc:
-                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", self.scope)
                                     if actual_caption:
                                         aggregate["processed"] += 1
                                         local_processed += 1
@@ -1435,9 +1497,9 @@ class QwenEngine:
                     continue
                 if kind == "done":
                     done_count += 1
-                    log_event(line, SCOPE)
+                    log_event(line, self.scope)
                 else:
-                    log_event(line, SCOPE)
+                    log_event(line, self.scope)
                     yield html_message("info", line), ""
                 if self.stop_flag.value:
                     yield html_message("info", f"Stopped. Processed {aggregate['processed']}/{total} images, {aggregate['skipped']} skipped."), ""
@@ -1466,7 +1528,7 @@ def _qwen_folder_process_worker(
     settings: dict[str, Any],
     worker_device: int | str,
 ) -> None:
-    engine = QwenEngine(Path(model_path_text))
+    engine = QwenEngine(Path(model_path_text), str(settings.get("model_key") or DEFAULT_QWEN_MODEL_KEY))
     paths = [Path(path) for path in path_texts]
     input_dir = Path(input_dir_text)
     output_dir = Path(output_dir_text)
@@ -1481,7 +1543,7 @@ def _qwen_folder_process_worker(
     local_skipped = 0
     local_failed = 0
     try:
-        log_event(f"Device {worker_device}: Qwen process worker started with {len(paths)} image(s).", SCOPE)
+        log_event(f"Device {worker_device}: Qwen process worker started with {len(paths)} image(s).", engine.scope)
         engine.load_model(settings)
         for offset in range(0, len(paths), batch_size):
             batch_paths = paths[offset : offset + batch_size]
@@ -1526,7 +1588,7 @@ def _qwen_folder_process_worker(
                 ]
                 log_event(
                     f"Device {worker_device}: Qwen process true batch {offset + 1}-{offset + len(work_items)} of {len(paths)}.",
-                    SCOPE,
+                    engine.scope,
                 )
                 batch_started = time.time()
                 raw_outputs = engine.generate_captions(images, settings_batch)
@@ -1542,7 +1604,7 @@ def _qwen_folder_process_worker(
                 ):
                     final, parsed, warnings = engine._finalize_output(image, raw, image_settings)
                     if warnings:
-                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", engine.scope)
                     actual_caption = save_caption_file(
                         output_caption_path,
                         final,
@@ -1565,7 +1627,7 @@ def _qwen_folder_process_worker(
                                     bbox_order="yxyx",
                                 )
                             except Exception as exc:
-                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", engine.scope)
                     if actual_caption:
                         saved_count += 1
                         local_processed += 1
@@ -1637,7 +1699,7 @@ def _qwen_zip_process_worker(
     extension: str,
     batch_size: int,
 ) -> None:
-    engine = QwenEngine(Path(model_path_text))
+    engine = QwenEngine(Path(model_path_text), str(settings.get("model_key") or DEFAULT_QWEN_MODEL_KEY))
     paths = [Path(path) for path in path_texts]
     settings = dict(settings)
     settings["device_id"] = str(worker_device)
@@ -1645,7 +1707,7 @@ def _qwen_zip_process_worker(
     local_processed = 0
     local_failed = 0
     try:
-        log_event(f"Device {worker_device}: Qwen ZIP process worker started with {len(paths)} image(s).", SCOPE)
+        log_event(f"Device {worker_device}: Qwen ZIP process worker started with {len(paths)} image(s).", engine.scope)
         engine.load_model(settings)
         for offset in range(0, len(paths), batch_size):
             batch_paths = paths[offset : offset + batch_size]
@@ -1654,7 +1716,7 @@ def _qwen_zip_process_worker(
                 settings_batch = [_settings_for_image(settings, path, image) for path, image in zip(batch_paths, images)]
                 log_event(
                     f"Device {worker_device}: Qwen ZIP process true batch {offset + 1}-{offset + len(batch_paths)} of {len(paths)}.",
-                    SCOPE,
+                    engine.scope,
                 )
                 batch_started = time.time()
                 raw_outputs = engine.generate_captions(images, settings_batch)
@@ -1665,7 +1727,7 @@ def _qwen_zip_process_worker(
                 for path, image, image_settings, raw in zip(batch_paths, images, settings_batch, raw_outputs):
                     final, parsed, warnings = engine._finalize_output(image, raw, image_settings)
                     if warnings:
-                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", SCOPE)
+                        log_event(f"JSON warnings for {path.name}: {' | '.join(warnings)}", engine.scope)
                     caption_payload[path.with_suffix(extension).name] = final
                     if bool(settings.get("auto_save_boxed_image", True)):
                         rows = json_to_element_rows(parsed, bbox_order="yxyx")
@@ -1675,7 +1737,7 @@ def _qwen_zip_process_worker(
                                 if image_bytes:
                                     boxed_payload[f"{path.stem}_boxed.png"] = image_bytes
                             except Exception as exc:
-                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", SCOPE)
+                                log_event(f"Boxed image save failed for {path.name}: {format_exception(exc)}", engine.scope)
                 local_processed += len(caption_payload)
                 event_queue.put(
                     {

@@ -1,0 +1,189 @@
+{
+  "generated_at": "2026-07-16T18:57:12+03:00",
+  "model": {
+    "key": "qwen3_vl_8b_instruct",
+    "label": "Qwen3-VL 8B Instruct",
+    "path": "G:\\Ultimate_Image_Captioner_Pro_v1\\Ultimate_Image_Captioner_Pro\\model_files_qwen3_vl3_8b_instruct"
+  },
+  "hardware": {
+    "device": 0,
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "total_vram_gib": 31.84234619140625
+  },
+  "environment": {
+    "available": true,
+    "platform": "win32",
+    "torch_version": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "triton_version": "3.7.1.post27",
+    "compiler": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe",
+    "compiler_source": "vswhere: C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+    "compiler_probe_ok": true,
+    "ninja": "C:\\Python310\\Scripts\\ninja.EXE",
+    "details": []
+  },
+  "workload": {
+    "image": "C:\\Users\\Furkan\\Pictures\\Untitled - Copy (2).jfif",
+    "prompt": "Describe this image in a detailed, concrete caption. Cover the main subject, composition, colors, materials, lighting, background, camera viewpoint, and every clearly readable word. Do not use a preamble.",
+    "max_new_tokens": 96,
+    "image_long_edge": 768,
+    "quantization": "bf16",
+    "compile_backend": "inductor",
+    "compile_mode": "max-autotune-no-cudagraphs",
+    "compile_dynamic": "static",
+    "compile_fullgraph": false,
+    "compile_cache_size_limit": 32,
+    "compile_threads": 8,
+    "compile_worker_start": "spawn",
+    "repeats": 3,
+    "cold_cache": true
+  },
+  "model_load_seconds": 7.217187300004298,
+  "model_allocated_gib": 16.33010721206665,
+  "runs": {
+    "eager": [
+      {
+        "phase": "eager",
+        "run": 1,
+        "wall_seconds": 2.9488615000009304,
+        "generation_seconds": 2.937094211578369,
+        "generated_tokens": 96,
+        "tokens_per_second": 32.68536624448639,
+        "allocated_before_gib": 16.36135768890381,
+        "reserved_before_gib": 16.6875,
+        "peak_allocated_gib": 16.6618914604187,
+        "peak_reserved_gib": 16.6875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive AMG styling with a black grille, prominent air",
+        "caption_hash": "e62115cc3c017157"
+      },
+      {
+        "phase": "eager",
+        "run": 2,
+        "wall_seconds": 3.277000300004147,
+        "generation_seconds": 3.2689437866210938,
+        "generated_tokens": 96,
+        "tokens_per_second": 29.36728382815946,
+        "allocated_before_gib": 16.36135768890381,
+        "reserved_before_gib": 16.6875,
+        "peak_allocated_gib": 16.6618914604187,
+        "peak_reserved_gib": 16.6875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive AMG styling with a black grille, prominent air",
+        "caption_hash": "e62115cc3c017157"
+      },
+      {
+        "phase": "eager",
+        "run": 3,
+        "wall_seconds": 2.7140922999969916,
+        "generation_seconds": 2.703388214111328,
+        "generated_tokens": 96,
+        "tokens_per_second": 35.51099301938683,
+        "allocated_before_gib": 16.36135768890381,
+        "reserved_before_gib": 16.6875,
+        "peak_allocated_gib": 16.6618914604187,
+        "peak_reserved_gib": 16.6875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive AMG styling with a black grille, prominent air",
+        "caption_hash": "e62115cc3c017157"
+      }
+    ],
+    "compiled_cold": {
+      "phase": "compiled cold",
+      "run": 0,
+      "wall_seconds": 80.18475880000915,
+      "generation_seconds": 80.17608118057251,
+      "generated_tokens": 96,
+      "tokens_per_second": 1.1973645828833772,
+      "allocated_before_gib": 16.36135768890381,
+      "reserved_before_gib": 16.6875,
+      "peak_allocated_gib": 16.68312978744507,
+      "peak_reserved_gib": 16.8046875,
+      "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+      "caption_hash": "1a37e7e32fa53547"
+    },
+    "compiled": [
+      {
+        "phase": "compiled",
+        "run": 1,
+        "wall_seconds": 1.624968699994497,
+        "generation_seconds": 1.6148204803466797,
+        "generated_tokens": 96,
+        "tokens_per_second": 59.44933270811014,
+        "allocated_before_gib": 16.47740077972412,
+        "reserved_before_gib": 16.8046875,
+        "peak_allocated_gib": 16.68790626525879,
+        "peak_reserved_gib": 16.8046875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+        "caption_hash": "1a37e7e32fa53547"
+      },
+      {
+        "phase": "compiled",
+        "run": 2,
+        "wall_seconds": 1.6102222999907099,
+        "generation_seconds": 1.599472999572754,
+        "generated_tokens": 96,
+        "tokens_per_second": 60.01976902745042,
+        "allocated_before_gib": 16.47740077972412,
+        "reserved_before_gib": 16.8046875,
+        "peak_allocated_gib": 16.68790626525879,
+        "peak_reserved_gib": 16.8046875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+        "caption_hash": "1a37e7e32fa53547"
+      },
+      {
+        "phase": "compiled",
+        "run": 3,
+        "wall_seconds": 1.6001353999890853,
+        "generation_seconds": 1.5892035961151123,
+        "generated_tokens": 96,
+        "tokens_per_second": 60.40761563507458,
+        "allocated_before_gib": 16.47740077972412,
+        "reserved_before_gib": 16.8046875,
+        "peak_allocated_gib": 16.68790626525879,
+        "peak_reserved_gib": 16.8046875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+        "caption_hash": "1a37e7e32fa53547"
+      }
+    ]
+  },
+  "summary": {
+    "eager": {
+      "median_tokens_per_second": 32.68536624448639,
+      "mean_tokens_per_second": 32.521214364010895,
+      "median_generation_seconds": 2.937094211578369,
+      "mean_generation_seconds": 2.96980873743693,
+      "peak_allocated_gib": 16.6618914604187,
+      "peak_reserved_gib": 16.6875
+    },
+    "compiled": {
+      "median_tokens_per_second": 60.01976902745042,
+      "mean_tokens_per_second": 59.958905790211716,
+      "median_generation_seconds": 1.599472999572754,
+      "mean_generation_seconds": 1.6011656920115154,
+      "peak_allocated_gib": 16.68790626525879,
+      "peak_reserved_gib": 16.8046875
+    },
+    "speedup": 1.8362887103207848,
+    "latency_reduction_percent": 45.542332511247196,
+    "peak_allocated_delta_gib": 0.02601480484008789,
+    "outputs_match": false,
+    "quality": {
+      "exact_match": false,
+      "word_sequence_similarity_percent": 96.7741935483871,
+      "character_similarity_percent": 89.43270300333704,
+      "common_prefix_words": 69,
+      "common_prefix_percent": 89.6103896103896,
+      "eager_word_count": 77,
+      "compiled_word_count": 78
+    }
+  },
+  "compile_worker_comparison": {
+    "baseline_report": "G:\\Ultimate_Image_Captioner_Pro_v1\\Ultimate_Image_Captioner_Pro\\reports\\torch_compile_single_worker.json",
+    "baseline_workers": 1,
+    "parallel_workers": 8,
+    "worker_start": "spawn",
+    "baseline_cold_seconds": 86.65295570000308,
+    "parallel_cold_seconds": 80.18475880000915,
+    "cold_compile_speedup": 1.080666163954255,
+    "cold_compile_speed_gain_percent": 8.066616395425497,
+    "outputs_match": true
+  }
+}

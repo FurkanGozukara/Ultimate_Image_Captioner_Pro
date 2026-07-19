@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>torch.compile Caption Benchmark</title>
+<style>
+:root { color-scheme: dark; --bg:#090b0e; --panel:#11151a; --panel2:#171c22; --line:#29313a; --text:#f3f6f8; --muted:#9ba8b4; --cyan:#4fd1c5; --green:#8ddf7b; --coral:#ff8f70; --yellow:#e8c65a; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,Segoe UI,Arial,sans-serif; letter-spacing:0; }
+main { width:min(1160px,calc(100% - 32px)); margin:0 auto; padding:42px 0 60px; }
+header { border-bottom:1px solid var(--line); padding-bottom:26px; margin-bottom:24px; }
+.eyebrow { color:var(--cyan); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0; }
+h1 { margin:8px 0 8px; font-size:46px; line-height:1.04; letter-spacing:0; }
+header p { margin:0; color:var(--muted); font-size:16px; }
+.status { display:inline-flex; gap:8px; align-items:center; margin-top:16px; padding:7px 10px; border:1px solid #31594e; border-radius:6px; color:var(--green); background:#10201b; font-size:13px; }
+.status.error { color:var(--coral); border-color:#693b35; background:#241310; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+.status.error .dot { background:var(--coral); }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:24px; }
+.worker-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.metric { min-width:0; padding:17px; background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--cyan); border-radius:7px; }
+.metric.green { border-top-color:var(--green); } .metric.coral { border-top-color:var(--coral); } .metric.yellow { border-top-color:var(--yellow); }
+.metric span,.metric small { display:block; color:var(--muted); font-size:12px; }
+.metric strong { display:block; margin:7px 0 4px; font-size:25px; overflow-wrap:anywhere; }
+section { margin-top:18px; padding:22px 0; border-top:1px solid var(--line); }
+h2 { margin:0 0 17px; font-size:19px; } h3 { margin:20px 0 10px; font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:0; }
+.bar-row { display:grid; grid-template-columns:150px 1fr 90px; gap:12px; align-items:center; margin:12px 0; }
+.bar-track { height:18px; background:#080a0d; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+.bar { height:100%; background:var(--coral); } .bar.compiled { background:var(--green); }
+.bar-value { text-align:right; font-variant-numeric:tabular-nums; }
+.split { display:grid; grid-template-columns:1.1fr .9fr; gap:18px; }
+dl { display:grid; grid-template-columns:minmax(150px,.7fr) 1fr; gap:9px 16px; margin:0; } dt { color:var(--muted); } dd { margin:0; overflow-wrap:anywhere; }
+table { width:100%; border-collapse:collapse; font-size:13px; } th,td { padding:10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; } th:first-child,td:first-child { text-align:left; } th { color:var(--muted); font-weight:600; }
+.table-wrap { overflow-x:auto; } code { color:var(--cyan); }
+.caption-grid { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+.caption-output { margin:0; color:var(--text); line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+.note { color:var(--muted); line-height:1.55; } ul { color:var(--muted); padding-left:20px; }
+footer { color:var(--muted); font-size:12px; text-align:center; margin-top:24px; }
+@media (max-width:850px) { .metrics,.worker-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .split,.caption-grid { grid-template-columns:1fr; } }
+@media (max-width:560px) { main { width:min(100% - 20px,1160px); padding-top:24px; } h1 { font-size:32px; } .metrics,.worker-metrics { grid-template-columns:1fr; } .bar-row { grid-template-columns:95px 1fr 72px; font-size:12px; } }
+</style>
+</head>
+<body><main>
+<header>
+  <div class="eyebrow">Ultimate Image Captioner Pro</div>
+  <h1>torch.compile benchmark</h1>
+  <p>Qwen3-VL 8B Instruct on NVIDIA GeForce RTX 5090 &middot; Untitled - Copy (2).jfif &middot; 96 max tokens</p>
+  <div class="status error"><span class="dot"></span>Eager and compiled captions differed; review the quality comparison</div>
+</header>
+<div class="metrics">
+  <article class="metric green"><span>Steady-state speed gain</span><strong>72.6% faster</strong><small>1.73x compiled / eager</small></article>
+  <article class="metric cyan"><span>Compiled throughput</span><strong>61.07 tok/s</strong><small>eager 35.38 tok/s</small></article>
+  <article class="metric coral"><span>Latency reduction</span><strong>42.1%</strong><small>2.71s -&gt; 1.57s</small></article>
+  <article class="metric yellow"><span>Peak VRAM delta</span><strong>+0.03 GiB</strong><small>compiled peak 16.69 GiB</small></article>
+</div>
+
+<section>
+  <h2>Steady-state generation</h2>
+  <div class="bar-row"><span>Eager</span><div class="bar-track"><div class="bar" style="width:57.93%"></div></div><span class="bar-value">35.38</span></div>
+  <div class="bar-row"><span>torch.compile</span><div class="bar-track"><div class="bar compiled" style="width:100.00%"></div></div><span class="bar-value">61.07</span></div>
+  <p class="note">The one-time compiled cold request took 86.65s end to end. It is reported separately and excluded from steady-state medians.</p>
+</section>
+<div class="split">
+<section>
+  <h2>Workload</h2>
+  <dl>
+    <dt>Model</dt><dd>Qwen3-VL 8B Instruct</dd><dt>Quantization</dt><dd>bf16</dd>
+    <dt>Prompt</dt><dd>Describe this image in a detailed, concrete caption. Cover the main subject, composition, colors, materials, lighting, background, camera viewpoint, and every clearly readable word. Do not use a preamble.</dd><dt>Image edge</dt><dd>768 px</dd>
+    <dt>Compile backend</dt><dd>inductor</dd><dt>Compile mode</dt><dd>max-autotune-no-cudagraphs</dd>
+    <dt>Shape mode</dt><dd>static</dd><dt>Compile workers</dt><dd>1 (spawn)</dd>
+    <dt>Measured repeats</dt><dd>1 per mode</dd>
+  </dl>
+</section>
+<section>
+  <h2>Environment</h2>
+  <dl>
+    <dt>PyTorch</dt><dd>2.13.0+cu130</dd><dt>CUDA</dt><dd>13.0</dd>
+    <dt>Triton</dt><dd>3.7.1.post27</dd><dt>Compiler</dt><dd>C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\cl.exe</dd>
+    <dt>Compiler source</dt><dd>vswhere: C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat</dd><dt>Ninja</dt><dd>C:\Python310\Scripts\ninja.EXE</dd>
+  </dl>
+  <ul><li>Compiler probe, CUDA, Triton, and Ninja checks passed.</li></ul>
+</section>
+</div>
+<section>
+  <h2>Output quality</h2>
+  <div class="status error"><span class="dot"></span>Caption mismatch detected</div>
+  <div class="caption-grid">
+    <div><h3>Eager output</h3><p class="caption-output">A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive AMG styling with a black grille, prominent air</p></div>
+    <div><h3>Compiled output</h3><p class="caption-output">A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM</p></div>
+  </div>
+</section>
+<section>
+  <h2>Measured runs</h2>
+  <div class="table-wrap"><table><thead><tr><th>Mode</th><th>Run</th><th>Tokens</th><th>Seconds</th><th>tok/s</th><th>Peak alloc GiB</th><th>Peak reserved GiB</th><th>Caption hash</th></tr></thead><tbody><tr><td>eager</td><td>1</td><td>96</td><td>2.714</td><td>35.38</td><td>16.66</td><td>16.69</td><td><code>e62115cc3c017157</code></td></tr><tr><td>compiled</td><td>1</td><td>96</td><td>1.572</td><td>61.07</td><td>16.69</td><td>16.80</td><td><code>1a37e7e32fa53547</code></td></tr></tbody></table></div>
+</section>
+<section>
+  <h2>Interpretation</h2>
+  <p class="note">Compilation targets the autoregressive decode path using Transformers' static cache and PyTorch Inductor. The image prefill remains eager. Parallel workers shorten kernel compilation but do not change the generated tensors. The first request pays compilation and autotuning cost; later captions reuse the compiled graph. Deterministic decoding and matching caption hashes verify equivalent output for this workload.</p>
+</section>
+<footer>Generated 2026-07-16T18:53:34+03:00 &middot; Ultimate Image Captioner Pro benchmark harness</footer>
+</main></body></html>

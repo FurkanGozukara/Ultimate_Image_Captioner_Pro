@@ -25,6 +25,7 @@ from .common import (
 )
 from .engines.beta import BetaEngine
 from .engines.qwen import QwenEngine
+from .model_catalog import selected_qwen_model
 from .engines.legacy_siglip import (
     create_alpha_one_engine,
     create_alpha_two_engine,
@@ -185,6 +186,13 @@ def beta_zip(payload: dict[str, Any]) -> dict[str, Any]:
         settings.get("replace_pairs"),
         bool(settings.get("replace_case_sensitive", False)),
         bool(settings.get("replace_single_word", False)),
+        bool(settings.get("torch_compile", False)),
+        str(settings.get("compile_backend") or "inductor"),
+        str(settings.get("compile_mode") or "max-autotune-no-cudagraphs"),
+        str(settings.get("compile_dynamic") or "false"),
+        bool(settings.get("compile_fullgraph", False)),
+        int(settings.get("compile_cache_size_limit", 32) or 32),
+        int(settings.get("compile_threads", 8) or 8),
     ):
         last_status = status
         zip_path = output or zip_path
@@ -233,6 +241,13 @@ def beta_folder(payload: dict[str, Any]) -> dict[str, Any]:
         settings.get("replace_pairs"),
         bool(settings.get("replace_case_sensitive", False)),
         bool(settings.get("replace_single_word", False)),
+        bool(settings.get("torch_compile", False)),
+        str(settings.get("compile_backend") or "inductor"),
+        str(settings.get("compile_mode") or "max-autotune-no-cudagraphs"),
+        str(settings.get("compile_dynamic") or "false"),
+        bool(settings.get("compile_fullgraph", False)),
+        int(settings.get("compile_cache_size_limit", 32) or 32),
+        int(settings.get("compile_threads", 8) or 8),
     ):
         last_status = status
         error_html = error or error_html
@@ -245,7 +260,8 @@ def qwen_single(payload: dict[str, Any]) -> dict[str, Any]:
     log_event("Qwen single start.", "Worker")
     settings = dict(payload["settings"])
     settings["use_subprocess"] = False
-    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    spec = selected_qwen_model(settings)
+    engine = QwenEngine(spec.path, spec.key)
     last_status = ""
     caption = ""
     overlay = ""
@@ -280,7 +296,8 @@ def qwen_zip(payload: dict[str, Any]) -> dict[str, Any]:
     log_event("Qwen files-to-ZIP batch start.", "Worker")
     settings = dict(payload["settings"])
     settings["use_subprocess"] = False
-    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    spec = selected_qwen_model(settings)
+    engine = QwenEngine(spec.path, spec.key)
     last_status = ""
     zip_path = None
     error_html = ""
@@ -297,7 +314,8 @@ def qwen_folder(payload: dict[str, Any]) -> dict[str, Any]:
     log_event("Qwen folder batch start.", "Worker")
     settings = dict(payload["settings"])
     settings["use_subprocess"] = False
-    engine = QwenEngine(BASE_DIR / "model_files_qwen3_vl3_8b_instruct")
+    spec = selected_qwen_model(settings)
+    engine = QwenEngine(spec.path, spec.key)
     last_status = ""
     error_html = ""
     for status, error in engine.run_batch_folder_processing(settings):

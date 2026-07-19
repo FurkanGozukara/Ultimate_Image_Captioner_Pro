@@ -1,0 +1,113 @@
+{
+  "generated_at": "2026-07-16T18:53:34+03:00",
+  "model": {
+    "key": "qwen3_vl_8b_instruct",
+    "label": "Qwen3-VL 8B Instruct",
+    "path": "G:\\Ultimate_Image_Captioner_Pro_v1\\Ultimate_Image_Captioner_Pro\\model_files_qwen3_vl3_8b_instruct"
+  },
+  "hardware": {
+    "device": 0,
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "total_vram_gib": 31.84234619140625
+  },
+  "environment": {
+    "available": true,
+    "platform": "win32",
+    "torch_version": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "triton_version": "3.7.1.post27",
+    "compiler": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe",
+    "compiler_source": "vswhere: C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+    "compiler_probe_ok": true,
+    "ninja": "C:\\Python310\\Scripts\\ninja.EXE",
+    "details": []
+  },
+  "workload": {
+    "image": "C:\\Users\\Furkan\\Pictures\\Untitled - Copy (2).jfif",
+    "prompt": "Describe this image in a detailed, concrete caption. Cover the main subject, composition, colors, materials, lighting, background, camera viewpoint, and every clearly readable word. Do not use a preamble.",
+    "max_new_tokens": 96,
+    "image_long_edge": 768,
+    "quantization": "bf16",
+    "compile_backend": "inductor",
+    "compile_mode": "max-autotune-no-cudagraphs",
+    "compile_dynamic": "static",
+    "compile_fullgraph": false,
+    "compile_cache_size_limit": 32,
+    "compile_threads": 1,
+    "compile_worker_start": "spawn",
+    "repeats": 1,
+    "cold_cache": true
+  },
+  "model_load_seconds": 7.0435932999971556,
+  "model_allocated_gib": 16.33010721206665,
+  "runs": {
+    "eager": [
+      {
+        "phase": "eager",
+        "run": 1,
+        "wall_seconds": 2.724876000007498,
+        "generation_seconds": 2.7135753631591797,
+        "generated_tokens": 96,
+        "tokens_per_second": 35.377679685385836,
+        "allocated_before_gib": 16.36135768890381,
+        "reserved_before_gib": 16.6875,
+        "peak_allocated_gib": 16.6618914604187,
+        "peak_reserved_gib": 16.6875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive AMG styling with a black grille, prominent air",
+        "caption_hash": "e62115cc3c017157"
+      }
+    ],
+    "compiled_cold": {
+      "phase": "compiled cold",
+      "run": 0,
+      "wall_seconds": 86.65295570000308,
+      "generation_seconds": 86.59434962272644,
+      "generated_tokens": 96,
+      "tokens_per_second": 1.1086173684339915,
+      "allocated_before_gib": 16.36135768890381,
+      "reserved_before_gib": 16.6875,
+      "peak_allocated_gib": 16.68312978744507,
+      "peak_reserved_gib": 16.8046875,
+      "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+      "caption_hash": "1a37e7e32fa53547"
+    },
+    "compiled": [
+      {
+        "phase": "compiled",
+        "run": 1,
+        "wall_seconds": 1.5825857000018004,
+        "generation_seconds": 1.5720345973968506,
+        "generated_tokens": 96,
+        "tokens_per_second": 61.06735828776762,
+        "allocated_before_gib": 16.47740602493286,
+        "reserved_before_gib": 16.8046875,
+        "peak_allocated_gib": 16.68791151046753,
+        "peak_reserved_gib": 16.8046875,
+        "caption": "A man with dark, curly hair and a trimmed beard, wearing glasses, stands confidently in front of a gold Mercedes-AMG S63 sedan, his hands clasped at his waist as he adjusts his dark navy suit jacket. He wears a crisp white dress shirt with the top button undone, a dark belt, and polished black dress shoes. The car, positioned directly behind him, features a glossy metallic gold finish, aggressive front styling with a large black grille, prominent AM",
+        "caption_hash": "1a37e7e32fa53547"
+      }
+    ]
+  },
+  "summary": {
+    "eager": {
+      "median_tokens_per_second": 35.377679685385836,
+      "mean_tokens_per_second": 35.377679685385836,
+      "median_generation_seconds": 2.7135753631591797,
+      "mean_generation_seconds": 2.7135753631591797,
+      "peak_allocated_gib": 16.6618914604187,
+      "peak_reserved_gib": 16.6875
+    },
+    "compiled": {
+      "median_tokens_per_second": 61.06735828776762,
+      "mean_tokens_per_second": 61.06735828776762,
+      "median_generation_seconds": 1.5720345973968506,
+      "mean_generation_seconds": 1.5720345973968506,
+      "peak_allocated_gib": 16.68791151046753,
+      "peak_reserved_gib": 16.8046875
+    },
+    "speedup": 1.7261549889885495,
+    "latency_reduction_percent": 42.06777454057264,
+    "peak_allocated_delta_gib": 0.026020050048828125,
+    "outputs_match": false
+  }
+}

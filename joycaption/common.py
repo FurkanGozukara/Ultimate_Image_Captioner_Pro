@@ -570,6 +570,12 @@ def apply_torch_optimizations(settings: dict[str, Any], when: str = "before") ->
         if settings.get("clear_cuda_cache", False) and torch.cuda.is_available():
             torch.cuda.empty_cache()
             applied.append(f"CUDA cache cleared {when} run")
+        if when == "before" and settings.get("torch_compile", False):
+            from .torch_compile import prepare_torch_compile
+
+            report = prepare_torch_compile(settings)
+            if report is not None:
+                applied.append(report.summary())
     except Exception as exc:
         applied.append(f"Optimization warning: {exc}")
     return applied
@@ -625,6 +631,12 @@ def optimization_status_text(settings: dict[str, Any]) -> str:
         labels.append("SDPA attention")
     if settings.get("use_liger_kernel", False):
         labels.append("Liger kernel")
+    try:
+        from .torch_compile import compile_status_text
+
+        labels.append(compile_status_text(settings))
+    except Exception:
+        pass
     try:
         from .attention import attention_status_text
 

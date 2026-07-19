@@ -6,9 +6,9 @@ from typing import Any
 from .attention import DEFAULT_JOY_ATTENTION, DEFAULT_QWEN_ATTENTION
 
 
-VRAM_PRESET_VALUES = [6, 8, 10, 12, 16, 24, 32]
+VRAM_PRESET_VALUES = [6, 8, 10, 12, 16, 24, 32, 48, 64, 80]
 VRAM_PRESET_CHOICES = [f"{value} GB" for value in VRAM_PRESET_VALUES]
-VRAM_TOLERANCE_GB = 0.5
+VRAM_TOLERANCE_GB = 1.0
 LOW_VRAM_QWEN_ATTENTION = "sdpa_cudnn"
 
 
@@ -114,10 +114,10 @@ def beta_vram_settings(label: str | int | None) -> dict[str, Any]:
     return {"model_quantization": "bf16", "downscale_max_res": "2048", "zip_batch_size": 1, "folder_batch_size": 1, "attention_backend": DEFAULT_JOY_ATTENTION}
 
 
-def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
+def qwen_vram_settings(label: str | int | None, model_key: str | None = None) -> dict[str, Any]:
     value = preset_value(label)
     if value <= 8:
-        return {
+        settings = {
             "model_quantization": "nf4",
             "image_long_edge": 512,
             "attention_backend": LOW_VRAM_QWEN_ATTENTION,
@@ -125,8 +125,8 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
             "folder_batch_size": 1,
             "max_new_tokens": 2048,
         }
-    if value <= 12:
-        return {
+    elif value <= 12:
+        settings = {
             "model_quantization": "nf4",
             "image_long_edge": 768,
             "attention_backend": LOW_VRAM_QWEN_ATTENTION,
@@ -134,8 +134,8 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
             "folder_batch_size": 1,
             "max_new_tokens": 3072,
         }
-    if value <= 16:
-        return {
+    elif value <= 16:
+        settings = {
             "model_quantization": "int8",
             "image_long_edge": 768,
             "attention_backend": DEFAULT_QWEN_ATTENTION,
@@ -143,8 +143,8 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
             "folder_batch_size": 1,
             "max_new_tokens": 4096,
         }
-    if value <= 24:
-        return {
+    elif value <= 24:
+        settings = {
             "model_quantization": "bf16",
             "image_long_edge": 1024,
             "attention_backend": DEFAULT_QWEN_ATTENTION,
@@ -152,11 +152,26 @@ def qwen_vram_settings(label: str | int | None) -> dict[str, Any]:
             "folder_batch_size": 1,
             "max_new_tokens": 4096,
         }
-    return {
-        "model_quantization": "bf16",
-        "image_long_edge": 1280,
-        "attention_backend": DEFAULT_QWEN_ATTENTION,
-        "file_batch_size": 1,
-        "folder_batch_size": 1,
-        "max_new_tokens": 6144,
-    }
+    else:
+        settings = {
+            "model_quantization": "bf16",
+            "image_long_edge": 1280,
+            "attention_backend": DEFAULT_QWEN_ATTENTION,
+            "file_batch_size": 1,
+            "folder_batch_size": 1,
+            "max_new_tokens": 6144,
+        }
+    if model_key in {
+        "qwen3_vl_30b_a3b_instruct",
+        "qwen3_6_27b",
+        "huihui_qwen3_6_27b_abliterated",
+    }:
+        # The 27B/30B choices need model-aware defaults. Keep them in 4-bit on
+        # common 24/32 GB cards, use INT8 on 48/64 GB cards, and reserve BF16
+        # for 80 GB accelerators.
+        if value <= 32:
+            settings["model_quantization"] = "nf4"
+        elif value <= 64:
+            settings["model_quantization"] = "int8"
+        settings["image_long_edge"] = min(int(settings["image_long_edge"]), 1024)
+    return settings

@@ -21,8 +21,17 @@ from ..json_tools import (
     save_boxed_image,
 )
 from ..qwen_presets import default_qwen_preset_id, preset_payload, qwen_preset_choices
+from ..model_catalog import DEFAULT_QWEN_MODEL_KEY, get_model_spec, qwen_model_choices
+from ..torch_compile import DEFAULT_COMPILE_SETTINGS
 from ..vram import VRAM_PRESET_CHOICES, default_vram_preset, qwen_vram_settings
-from .shared import TabUI, build_replace_pair_controls, run_open_folder, run_open_outputs, settings_from_values
+from .shared import (
+    TabUI,
+    build_replace_pair_controls,
+    build_torch_compile_controls,
+    run_open_folder,
+    run_open_outputs,
+    settings_from_values,
+)
 
 
 DEFAULT_PRESET_ID = default_qwen_preset_id()
@@ -46,6 +55,7 @@ ELEMENT_COLUMN_WIDTHS = [
 ]
 
 ORDER = [
+    "model_key",
     "vram_preset",
     "preset_id",
     "output_format",
@@ -80,6 +90,14 @@ ORDER = [
     "clear_cuda_cache",
     "low_cpu_mem_usage",
     "attention_backend",
+    "enable_thinking",
+    "torch_compile",
+    "compile_backend",
+    "compile_mode",
+    "compile_dynamic",
+    "compile_fullgraph",
+    "compile_cache_size_limit",
+    "compile_threads",
     "compact_json",
     "json_retries",
     "remove_newlines",
@@ -102,6 +120,7 @@ ORDER = [
 ]
 
 DEFAULTS: dict[str, Any] = {
+    "model_key": DEFAULT_QWEN_MODEL_KEY,
     "vram_preset": DEFAULT_VRAM,
     "preset_id": DEFAULT_PRESET_ID,
     "output_format": DEFAULT_PAYLOAD["output_format"],
@@ -136,6 +155,8 @@ DEFAULTS: dict[str, Any] = {
     "clear_cuda_cache": True,
     "low_cpu_mem_usage": True,
     "attention_backend": DEFAULT_VRAM_SETTINGS.get("attention_backend", DEFAULT_QWEN_ATTENTION),
+    "enable_thinking": False,
+    **DEFAULT_COMPILE_SETTINGS,
     "compact_json": True,
     "json_retries": 1,
     "remove_newlines": False,
@@ -884,16 +905,24 @@ def build_tab(engine: Any) -> TabUI:
 
             with gr.Accordion("Generation & Model", open=True):
                 with gr.Row():
-                    components["vram_preset"] = gr.Dropdown(
-                        choices=VRAM_PRESET_CHOICES,
-                        value=DEFAULTS["vram_preset"],
-                        label="VRAM Preset",
-                        allow_custom_value=False,
-                    )
-                    components["use_subprocess"] = gr.Checkbox(
-                        label="Run single and batch in subprocess, then terminate it",
-                        value=DEFAULTS["use_subprocess"],
-                    )
+                    with gr.Column(scale=2):
+                        components["model_key"] = gr.Dropdown(
+                            choices=qwen_model_choices(),
+                            value=DEFAULTS["model_key"],
+                            label="Caption Model",
+                            allow_custom_value=False,
+                        )
+                        components["vram_preset"] = gr.Dropdown(
+                            choices=VRAM_PRESET_CHOICES,
+                            value=DEFAULTS["vram_preset"],
+                            label="VRAM Preset",
+                            allow_custom_value=False,
+                        )
+                    with gr.Column(scale=1):
+                        components["use_subprocess"] = gr.Checkbox(
+                            label="Run single and batch in subprocess, then terminate it",
+                            value=DEFAULTS["use_subprocess"],
+                        )
                 with gr.Row():
                     components["model_quantization"] = gr.Radio(
                         choices=["bf16", "fp16", "int8", "nf4"],
@@ -928,6 +957,12 @@ def build_tab(engine: Any) -> TabUI:
                         label="Attention Backend",
                         allow_custom_value=False,
                     )
+                    components["enable_thinking"] = gr.Checkbox(
+                        label="Enable Thinking",
+                        value=DEFAULTS["enable_thinking"],
+                        interactive=get_model_spec(DEFAULT_QWEN_MODEL_KEY).supports_thinking,
+                    )
+                build_torch_compile_controls(components, DEFAULTS)
                 with gr.Row():
                     components["compact_json"] = gr.Checkbox(label="Compact JSON", value=DEFAULTS["compact_json"])
                     components["json_retries"] = gr.Slider(0, 3, value=DEFAULTS["json_retries"], step=1, label="JSON Repair Retries")
@@ -992,10 +1027,10 @@ def build_tab(engine: Any) -> TabUI:
         components["ideogram_json_caption"],
     ]
 
-    def apply_preset(preset_id, vram_preset, *vars_values):
+    def apply_preset(preset_id, vram_preset, model_key, *vars_values):
         variables = _variables(*vars_values)
         payload = preset_payload(preset_id, variables)
-        vram_settings = qwen_vram_settings(vram_preset)
+        vram_settings = qwen_vram_settings(vram_preset, model_key)
         return (
             payload["system_prompt"],
             payload["prompt"],
@@ -1007,8 +1042,8 @@ def build_tab(engine: Any) -> TabUI:
             payload["app_side_only"],
         )
 
-    def apply_vram_preset(vram_preset):
-        settings = qwen_vram_settings(vram_preset)
+    def apply_vram_preset(vram_preset, model_key):
+        settings = qwen_vram_settings(vram_preset, model_key)
         return (
             settings["model_quantization"],
             settings["image_long_edge"],
@@ -1016,6 +1051,19 @@ def build_tab(engine: Any) -> TabUI:
             settings["file_batch_size"],
             settings["folder_batch_size"],
             settings["max_new_tokens"],
+        )
+
+    def apply_model_defaults(vram_preset, model_key):
+        settings = qwen_vram_settings(vram_preset, model_key)
+        spec = get_model_spec(model_key)
+        return (
+            settings["model_quantization"],
+            settings["image_long_edge"],
+            settings["attention_backend"],
+            settings["file_batch_size"],
+            settings["folder_batch_size"],
+            settings["max_new_tokens"],
+            gr.update(value=False, interactive=spec.supports_thinking),
         )
 
     def run_single(image, *values):
@@ -1216,7 +1264,7 @@ def build_tab(engine: Any) -> TabUI:
         components["image_long_edge"],
         components["app_side_only"],
     ]
-    preset_inputs = [components["preset_id"], components["vram_preset"]] + variable_inputs
+    preset_inputs = [components["preset_id"], components["vram_preset"], components["model_key"]] + variable_inputs
     components["preset_id"].change(
         apply_preset,
         inputs=preset_inputs,
@@ -1236,7 +1284,7 @@ def build_tab(engine: Any) -> TabUI:
         )
     components["vram_preset"].change(
         apply_vram_preset,
-        inputs=[components["vram_preset"]],
+        inputs=[components["vram_preset"], components["model_key"]],
         outputs=[
             components["model_quantization"],
             components["image_long_edge"],
@@ -1244,6 +1292,22 @@ def build_tab(engine: Any) -> TabUI:
             components["file_batch_size"],
             components["folder_batch_size"],
             components["max_new_tokens"],
+        ],
+        queue=False,
+        show_progress="hidden",
+        show_progress_on=[],
+    )
+    components["model_key"].change(
+        apply_model_defaults,
+        inputs=[components["vram_preset"], components["model_key"]],
+        outputs=[
+            components["model_quantization"],
+            components["image_long_edge"],
+            components["attention_backend"],
+            components["file_batch_size"],
+            components["folder_batch_size"],
+            components["max_new_tokens"],
+            components["enable_thinking"],
         ],
         queue=False,
         show_progress="hidden",

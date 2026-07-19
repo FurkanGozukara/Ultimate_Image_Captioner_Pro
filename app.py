@@ -169,8 +169,8 @@ def build_app() -> gr.Blocks:
                 with gr.Column(scale=1, elem_classes=["jc-brand"]):
                     gr.HTML(
                         """
-                        <h1>Ultimate Image Captioner Pro V1.2.1 : <a href="https://www.patreon.com/SECourses/posts/162527725">https://www.patreon.com/SECourses/posts/162527725</a></h1>
-                        <p>Unified Qwen3 VL, Ideogram JSON, Pre-Alpha, Alpha, and Beta captioning workspace.</p>
+                        <h1>Ultimate Image Captioner Pro V2.0 : <a href="https://www.patreon.com/SECourses/posts/162527725">https://www.patreon.com/SECourses/posts/162527725</a></h1>
+                        <p>Unified Qwen vision, Ideogram JSON, Pre-Alpha, Alpha, and Beta captioning workspace.</p>
                         """
                     )
                     with gr.Column(elem_classes=["jc-header-status"]):
@@ -198,7 +198,7 @@ def build_app() -> gr.Blocks:
             ]
 
             with gr.Tabs(elem_id="jc-main-tabs", elem_classes=["jc-main-tabs"]):
-                with gr.Tab("Qwen3 VL 8B Instruct", render_children=True):
+                with gr.Tab("Qwen Vision Models", render_children=True):
                     tabs.append(qwen.build_tab(qwen_engine))
                 with gr.Tab("Joy Caption Beta 1", render_children=True):
                     tabs.append(beta_one.build_tab(beta_engine))
